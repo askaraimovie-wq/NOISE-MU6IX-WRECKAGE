@@ -368,8 +368,7 @@ void WreckageWinView::drawSourceTab(const ThemePalette& th) {
         rt_->DrawRectangle(D2D1::RectF(kx, pmY, kx + wKeyW, pmY + pmH), brush_, sel ? 2.2f : 1.2f);
 
         // Vertical note label along bottom half of white key
-        std::wstring lbl = midiNoteName(sl.midiNote) + L"
-" + ((sl.itemCount > 0) ? toWide(sl.name) : L"DROP");
+        std::wstring lbl = midiNoteName(sl.midiNote) + L"\n" + ((sl.itemCount > 0) ? toWide(sl.name) : L"DROP");
         drawText(lbl.c_str(), kx + 2, pmY + pmH * 0.56f, wKeyW - 4, pmH * 0.40f,
                  0x181C22, 9.0f, sel, DWRITE_TEXT_ALIGNMENT_CENTER);
     }
@@ -393,8 +392,7 @@ void WreckageWinView::drawSourceTab(const ThemePalette& th) {
         brush_->SetColor(toD2D(sel ? 0xFFFFFF : 0x000000));
         rt_->DrawRectangle(D2D1::RectF(kx, pmY, kx + bKeyW, pmY + bKeyH), brush_, sel ? 1.8f : 1.0f);
 
-        std::wstring bLbl = midiNoteName(sl.midiNote) + (sl.itemCount > 0 ? (L"
-" + toWide(sl.name)) : L"");
+        std::wstring bLbl = midiNoteName(sl.midiNote) + (sl.itemCount > 0 ? (L"\n" + toWide(sl.name)) : L"");
         drawText(bLbl.c_str(), kx + 1, pmY + 6.0f, bKeyW - 2, bKeyH - 18.0f, 0xFFFFFF, 7.8f, true, DWRITE_TEXT_ALIGNMENT_CENTER);
     }
 
