@@ -2,6 +2,7 @@
 #include "wreckage_view_win.h"
 #include "wreckage_uids.h"
 #include "version.h"
+#include "wreckage_dsp.h"
 #include <windowsx.h>
 #include <shobjidl.h>
 #include <shellapi.h>
@@ -15,6 +16,7 @@ using namespace Steinberg;
 using namespace Steinberg::Vst;
 
 namespace NoiseMu6ix {
+static constexpr float kPi = 3.14159265358979323846f;
 
 static const wchar_t* kWndClassName = L"NoiseMu6ixWreckageD2DViewClass_v104";
 
