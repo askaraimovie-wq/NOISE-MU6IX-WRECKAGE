@@ -103,7 +103,7 @@ public:
             dampState_[i] = 0.0f;
             float rt = std::max(0.15f, decaySeconds);
             fb_[i] = std::pow(10.0f, (-3.0f * (static_cast<float>(len) / sr_)) / rt);
-            fb_[i] = std::clamp(fb_[i], 0.15f, 0.94f);
+            fb_[i] = std::clamp(fb_[i], 0.20f, 0.965f);
         }
         dampCoeff_ = std::clamp(1.0f - (lpHz / (sr_ * 0.5f)), 0.15f, 0.85f);
         hpL_.setHighPass(sr_, hpHz); hpR_.setHighPass(sr_, hpHz);
@@ -136,8 +136,8 @@ public:
             if (++idx_[i] >= static_cast<int>(lines_[i].size())) idx_[i] = 0;
         }
 
-        outL = lpL_.process(hpL_.process(0.55f * (d[0] + d[2])));
-        outR = lpR_.process(hpR_.process(0.55f * (d[1] + d[3])));
+        outL = lpL_.process(hpL_.process(0.85f * (d[0] + d[2])));
+        outR = lpR_.process(hpR_.process(0.85f * (d[1] + d[3])));
     }
 
 private:

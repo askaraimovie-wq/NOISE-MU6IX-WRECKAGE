@@ -182,8 +182,8 @@ public:
 
     void prepare(double sampleRate) {
         sr_ = static_cast<float>(std::max(8000.0, sampleRate));
-        roomBus_.prepare(sr_, 8.0f, 0.55f, 120.0f, 8500.0f);
-        hallBus_.prepare(sr_, 28.0f, 2.55f, 150.0f, 5500.0f);
+        roomBus_.prepare(sr_, 8.0f, 0.75f, 120.0f, 9000.0f);
+        hallBus_.prepare(sr_, 24.0f, 3.20f, 140.0f, 6200.0f);
         lfeBus_.prepare(sr_);
         crushBus_.prepare(sr_);
         masterFx_.prepare(sr_);
@@ -358,13 +358,13 @@ public:
                 float depth = std::clamp(v.stageDepth * params_.stageMasterDepth, 0.0f, 1.0f);
                 float stagedL = v.stageLpfL.process(cL) * totalGain * v.panL;
                 float stagedR = v.stageLpfR.process(cR) * totalGain * v.panR;
-                float closeDryScale = 1.0f - depth * 0.42f;
+                float closeDryScale = 1.0f - depth * 0.62f;
 
                 sumCloseL += stagedL * closeDryScale;
                 sumCloseR += stagedR * closeDryScale;
 
-                float roomDepthSend = 0.45f + depth * 0.85f;
-                float hallDepthSend = 0.25f + depth * 1.15f;
+                float roomDepthSend = 0.35f + depth * 1.15f;
+                float hallDepthSend = 0.20f + depth * 1.85f;
 
                 if (v.hasRealRoom) {
                     float rl = 0.0f, rr = 0.0f;
