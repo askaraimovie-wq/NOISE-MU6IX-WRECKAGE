@@ -1,8 +1,4 @@
 #!/usr/bin/env python3
-"""Strict Base-10 Rollover Version Bumper for NOISE MU6IX — WRECKAGE.
-Rule: Each minor/patch digit stays in 0..9 (never 10).
-Example: 1.0.8 -> 1.0.9 -> 1.1.0 ... 1.9.9 -> 2.0.0
-"""
 import pathlib, sys
 
 VERSION_FILE = pathlib.Path(__file__).resolve().parent.parent / "VERSION"
