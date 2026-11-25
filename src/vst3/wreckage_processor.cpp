@@ -8,6 +8,7 @@
 #include "pluginterfaces/vst/ivstmessage.h"
 #include "pluginterfaces/base/ustring.h"
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstring>
 #include <filesystem>
@@ -49,7 +50,8 @@ tresult PLUGIN_API WreckageProcessor::terminate() { return AudioEffect::terminat
 tresult PLUGIN_API WreckageProcessor::setActive(TBool state) { return AudioEffect::setActive(state); }
 
 tresult PLUGIN_API WreckageProcessor::setupProcessing(ProcessSetup& newSetup) {
-    engine_.prepare(newSetup.sampleRate);
+    sampleRate_ = std::max(8000.0, newSetup.sampleRate);
+    engine_.prepare(sampleRate_);
     return AudioEffect::setupProcessing(newSetup);
 }
 
@@ -97,7 +99,7 @@ void WreckageProcessor::applyNormalizedParam(ParamID id, ParamValue val) {
         case kParamCompAttack:  fx.compAttackMs = 0.5f + f * 79.5f; break;
         case kParamCompRelease: fx.compReleaseMs = 15.0f + f * 385.0f; break;
         case kParamCompKnee:    fx.compKneeDb = f * 12.0f; break;
-        case kParamCompMakeup:  fx.compMakeupDb = f * 15.0f; break;
+        case kParamCompMakeup:  fx.compMakeupDb = (f - 0.5f) * 24.0f; break;
 
         case kParamSatOn:     fx.satOn = (f >= 0.5f); break;
         case kParamSatDrive:  fx.satDrive = f; break;
@@ -126,8 +128,6 @@ void WreckageProcessor::applyNormalizedParam(ParamID id, ParamValue val) {
         case kParamVelCurve:
             p.velCurve = (f < 0.33f) ? VelocityCurve::Soft : ((f < 0.67f) ? VelocityCurve::Linear : VelocityCurve::Hard);
             break;
-        case kParamGlobalFakeRR:  p.globalFakeRR  = (f >= 0.5f); break;
-        case kParamGlobalFakeVel: p.globalFakeVel = (f >= 0.5f); break;
         case kParamGlobalFakeMic: p.globalFakeMic = (f >= 0.5f); break;
 
         case kParamPunishOn:     fx.punishOn = (f >= 0.5f); break;
@@ -143,6 +143,8 @@ void WreckageProcessor::applyNormalizedParam(ParamID id, ParamValue val) {
 }
 
 tresult PLUGIN_API WreckageProcessor::process(ProcessData& data) {
+    auto t0 = std::chrono::steady_clock::now();
+
     if (data.inputParameterChanges) {
         int32 numParams = data.inputParameterChanges->getParameterCount();
         for (int32 i = 0; i < numParams; ++i) {
@@ -199,7 +201,13 @@ tresult PLUGIN_API WreckageProcessor::process(ProcessData& data) {
 
     engine_.process(pb);
 
-    if (hadMidiEvent || ++telemetryCounter_ >= 16) {
+    auto t1 = std::chrono::steady_clock::now();
+    double elapsedSec = std::chrono::duration<double>(t1 - t0).count();
+    double budgetSec = static_cast<double>(data.numSamples) / sampleRate_;
+    float instCpu = (budgetSec > 0.0) ? static_cast<float>(std::clamp((elapsedSec / budgetSec) * 100.0, 0.0, 99.9)) : 0.0f;
+    cpuLoadPct_ = cpuLoadPct_ * 0.85f + instCpu * 0.15f;
+
+    if (hadMidiEvent || ++telemetryCounter_ >= 4) {
         telemetryCounter_ = 0;
         broadcastTelemetryToUi();
     }
@@ -210,7 +218,7 @@ tresult PLUGIN_API WreckageProcessor::setState(IBStream* state) {
     if (!state) return kResultFalse;
     IBStreamer s(state, kLittleEndian);
     int32 ver = 0;
-    if (!s.readInt32(ver) || ver != 4) return kResultFalse;
+    if (!s.readInt32(ver) || ver != 5) return kResultFalse;
 
     auto& p = engine_.params();
     auto& fx = p.fx;
@@ -218,9 +226,7 @@ tresult PLUGIN_API WreckageProcessor::setState(IBStream* state) {
         s.readFloat(p.busGain[i]);
         int8 byp = 0; s.readInt8(byp); p.busBypass[i] = (byp != 0);
     }
-    int8 gr = 1, gv = 1, gm = 1;
-    s.readInt8(gr); p.globalFakeRR = (gr != 0);
-    s.readInt8(gv); p.globalFakeVel = (gv != 0);
+    int8 gm = 1;
     s.readInt8(gm); p.globalFakeMic = (gm != 0);
 
     int8 b = 0; int32 iv = 0;
@@ -242,7 +248,7 @@ tresult PLUGIN_API WreckageProcessor::setState(IBStream* state) {
 tresult PLUGIN_API WreckageProcessor::getState(IBStream* state) {
     if (!state) return kResultFalse;
     IBStreamer s(state, kLittleEndian);
-    s.writeInt32(4);
+    s.writeInt32(5);
 
     const auto& p = engine_.params();
     const auto& fx = p.fx;
@@ -250,8 +256,6 @@ tresult PLUGIN_API WreckageProcessor::getState(IBStream* state) {
         s.writeFloat(p.busGain[i]);
         s.writeInt8(p.busBypass[i] ? 1 : 0);
     }
-    s.writeInt8(p.globalFakeRR ? 1 : 0);
-    s.writeInt8(p.globalFakeVel ? 1 : 0);
     s.writeInt8(p.globalFakeMic ? 1 : 0);
 
     s.writeInt8(fx.filterOn ? 1 : 0); s.writeInt32(fx.filterType); s.writeFloat(fx.filterCutoffHz); s.writeFloat(fx.filterRes);
@@ -280,6 +284,8 @@ void WreckageProcessor::broadcastSlotSummaryToUi(int slotIdx) {
         attrs->setInt("midiNote", sl.midiNote);
         attrs->setFloat("x", sl.stageX);
         attrs->setFloat("y", sl.stageY);
+        attrs->setInt("fakeRR", sl.fakeRR ? 1 : 0);
+        attrs->setInt("fakeVel", sl.fakeVel ? 1 : 0);
         attrs->setBinary("nameUtf8", sl.name.data(), static_cast<uint32>(sl.name.size()));
         sendMessage(msg);
         msg->release();
@@ -302,8 +308,6 @@ void WreckageProcessor::broadcastWaveDataToUi(int slotIdx, int itemIdx) {
         attrs->setFloat("end", it.endNorm);
         attrs->setFloat("fadeIn", it.fadeInNorm);
         attrs->setFloat("fadeOut", it.fadeOutNorm);
-        attrs->setFloat("velMin", it.velMin);
-        attrs->setFloat("velMax", it.velMax);
         attrs->setBinary("peaks", prim->peaks.data(), static_cast<uint32>(prim->peaks.size() * sizeof(float)));
         sendMessage(msg);
         msg->release();
@@ -316,7 +320,10 @@ void WreckageProcessor::broadcastTelemetryToUi() {
         auto* attrs = msg->getAttributes();
         attrs->setInt("voices", engine_.activeVoiceCount());
         attrs->setInt("ramBytes", static_cast<int64>(engine_.totalSampleRamBytes()));
+        attrs->setFloat("cpuPct", static_cast<double>(cpuLoadPct_));
         attrs->setFloat("grDb", static_cast<double>(engine_.currentGrDb()));
+        attrs->setFloat("outLvl", static_cast<double>(engine_.currentOutLevel()));
+        attrs->setFloat("playhead", static_cast<double>(engine_.getSlotPlayheadNorm(selectedUiSlot_)));
         uint64_t lo = 0, hi = 0;
         for (int n = 0; n < 64; ++n) {
             if (engine_.isNotePlaying(n)) lo |= (1ULL << n);
@@ -349,6 +356,14 @@ tresult PLUGIN_API WreckageProcessor::notify(IMessage* message) {
         broadcastTelemetryToUi();
         return kResultOk;
     }
+    if (strcmp(id, "SelectSlot") == 0) {
+        int64 sl = 0; attrs->getInt("slot", sl);
+        selectedUiSlot_ = std::clamp(static_cast<int>(sl), 0, kTotalSlots - 1);
+        if (engine_.slot(selectedUiSlot_).itemCount() > 0) {
+            broadcastWaveDataToUi(selectedUiSlot_, 0);
+        }
+        return kResultOk;
+    }
     if (strcmp(id, "Panic") == 0) {
         engine_.panicAllNotesOff();
         broadcastTelemetryToUi();
@@ -364,6 +379,17 @@ tresult PLUGIN_API WreckageProcessor::notify(IMessage* message) {
         int64 sl = 0; attrs->getInt("slot", sl);
         engine_.clearSlot(static_cast<int>(sl));
         broadcastSlotSummaryToUi(static_cast<int>(sl));
+        broadcastTelemetryToUi();
+        return kResultOk;
+    }
+    if (strcmp(id, "DeleteWaveItem") == 0) {
+        int64 sl = 0, item = 0;
+        attrs->getInt("slot", sl); attrs->getInt("item", item);
+        engine_.deleteWaveItem(static_cast<int>(sl), static_cast<int>(item));
+        broadcastSlotSummaryToUi(static_cast<int>(sl));
+        if (engine_.slot(static_cast<int>(sl)).itemCount() > 0) {
+            broadcastWaveDataToUi(static_cast<int>(sl), 0);
+        }
         broadcastTelemetryToUi();
         return kResultOk;
     }
@@ -406,24 +432,25 @@ tresult PLUGIN_API WreckageProcessor::notify(IMessage* message) {
             case 0: s.gain = static_cast<float>(fval); break;
             case 1: s.pitchSemitones = (static_cast<float>(fval) - 0.5f) * 48.0f; break;
             case 2: s.attackMs = static_cast<float>(fval) * 200.0f; break;
-            case 3: s.releaseMs = 20.0f + static_cast<float>(fval) * 3980.0f; break;
+            case 3: s.releaseMs = 15.0f + static_cast<float>(fval) * 3985.0f; break;
             case 5: s.oneShot = (ival != 0); break;
             case 6: s.chokeGroup = static_cast<int>(ival); break;
             case 7: s.reverse = (ival != 0); break;
             case 8: s.purged = (ival != 0); break;
             case 10: s.toneLowDb  = (static_cast<float>(fval) - 0.5f) * 24.0f; break;
             case 11: s.toneHighDb = (static_cast<float>(fval) - 0.5f) * 24.0f; break;
+            case 12: s.fakeRR = (ival != 0); break;
+            case 13: s.fakeVel = (ival != 0); break;
             default: break;
         }
         return kResultOk;
     }
     if (strcmp(id, "SetWaveEdit") == 0) {
         int64 sl = 0, item = 0;
-        double st = 0.0, en = 1.0, fi = 0.0, fo = 0.0, vmin = 0.0, vmax = 1.0;
+        double st = 0.0, en = 1.0, fi = 0.0, fo = 0.0;
         attrs->getInt("slot", sl); attrs->getInt("item", item);
         attrs->getFloat("start", st); attrs->getFloat("end", en);
         attrs->getFloat("fadeIn", fi); attrs->getFloat("fadeOut", fo);
-        attrs->getFloat("velMin", vmin); attrs->getFloat("velMax", vmax);
         auto& s = engine_.slot(static_cast<int>(sl));
         if (item >= 0 && item < static_cast<int>(s.items.size())) {
             auto& it = s.items[static_cast<size_t>(item)];
@@ -431,8 +458,6 @@ tresult PLUGIN_API WreckageProcessor::notify(IMessage* message) {
             it.endNorm     = std::clamp(static_cast<float>(en), it.startNorm + 0.02f, 1.0f);
             it.fadeInNorm  = std::clamp(static_cast<float>(fi), 0.0f, 0.5f);
             it.fadeOutNorm = std::clamp(static_cast<float>(fo), 0.0f, 0.5f);
-            it.velMin      = std::clamp(static_cast<float>(vmin), 0.0f, 0.95f);
-            it.velMax      = std::clamp(static_cast<float>(vmax), it.velMin + 0.05f, 1.0f);
         }
         return kResultOk;
     }

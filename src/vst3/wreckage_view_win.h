@@ -57,6 +57,7 @@ private:
 
     void applyZoomIndex(int idx);
     void openRootFolderDialog();
+    void openLoadWavDialog();
     void openExportNm6Dialog(bool forceSaveAs);
     void rescanRootDirectory();
 
@@ -88,7 +89,7 @@ private:
     std::vector<std::wstring> browserItems_;
     int selectedCategory_ = -1;
 
-    float uiScale_ = 1.0f;       // Default 100%
+    float uiScale_ = 1.0f;
 };
 
 } // namespace NoiseMu6ix

@@ -33,6 +33,9 @@ private:
     void broadcastTelemetryToUi();
 
     WreckageEngine engine_;
+    double sampleRate_ = 44100.0;
+    float cpuLoadPct_ = 0.0f;
+    int selectedUiSlot_ = 0;
     int telemetryCounter_ = 0;
 };
 

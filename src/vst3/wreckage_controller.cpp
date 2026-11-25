@@ -70,12 +70,12 @@ tresult PLUGIN_API WreckageController::initialize(FUnknown* context) {
     addRange(kParamCompAttack,  STR16("Comp Attack"),  0.12);
     addRange(kParamCompRelease, STR16("Comp Release"), 0.25);
     addRange(kParamCompKnee,    STR16("Comp Knee"),    0.33);
-    addRange(kParamCompMakeup,  STR16("Comp Makeup"),  0.50); // 0.50 = 0.0 dB center
+    addRange(kParamCompMakeup,  STR16("Comp Makeup"),  0.50);
 
     addRange(kParamSatOn,     STR16("Sat On"),     0.0, 1);
     addRange(kParamSatDrive,  STR16("Sat Drive"),  0.25);
     addRange(kParamSatWarmth, STR16("Sat Warmth"), 0.50);
-    addRange(kParamSatMix,    STR16("Sat Mix"),    0.00); // Default 0% (100% Dry)
+    addRange(kParamSatMix,    STR16("Sat Mix"),    0.00);
 
     addRange(kParamDelayOn,       STR16("Delay On"),       0.0, 1);
     addRange(kParamDelayMode,     STR16("Delay Mode"),     0.0, 1);
@@ -88,17 +88,15 @@ tresult PLUGIN_API WreckageController::initialize(FUnknown* context) {
     addRange(kParamRevOn,       STR16("Reverb On"),      0.0, 1);
     addRange(kParamRevMode,     STR16("Reverb Mode"),    1.0, 2);
     addRange(kParamRevPreDelay, STR16("Reverb PreDelay"),0.15);
-    addRange(kParamRevDecay,    STR16("Reverb Decay"),   0.35);
+    addRange(kParamRevDecay,    STR16("Reverb Decay"),   0.38);
     addRange(kParamRevSize,     STR16("Reverb Size"),    0.65);
-    addRange(kParamRevLowCut,   STR16("Reverb LowCut"),  0.25);
-    addRange(kParamRevHighCut,  STR16("Reverb HighCut"), 0.36);
-    addRange(kParamRevMix,      STR16("Reverb Mix"),     0.24);
+    addRange(kParamRevLowCut,   STR16("Reverb LowCut"),  0.21);
+    addRange(kParamRevHighCut,  STR16("Reverb HighCut"), 0.42);
+    addRange(kParamRevMix,      STR16("Reverb Mix"),     0.30);
 
     addRange(kParamLimiterOn,     STR16("Output Limiter"),  1.0, 1);
     addRange(kParamMonoBass,      STR16("Mono Bass"),       1.0, 1);
     addRange(kParamVelCurve,       STR16("Velocity Curve"),  0.5, 2);
-    addRange(kParamGlobalFakeRR,  STR16("Global Fake RR"),  1.0, 1);
-    addRange(kParamGlobalFakeVel, STR16("Global Fake Vel"), 1.0, 1);
     addRange(kParamGlobalFakeMic, STR16("Global Fake Mic"), 1.0, 1);
 
     addRange(kParamPunishOn,     STR16("PUNISH On"),     1.0, 1);
@@ -117,15 +115,13 @@ tresult PLUGIN_API WreckageController::setComponentState(IBStream* state) {
     if (!state) return kResultFalse;
     IBStreamer s(state, kLittleEndian);
     int32 ver = 0;
-    if (!s.readInt32(ver) || ver != 4) return kResultFalse;
+    if (!s.readInt32(ver) || ver != 5) return kResultFalse;
 
     float f = 0.0f; int8 b = 0; int32 iv = 0;
     for (int i = 0; i < 4; ++i) {
         s.readFloat(f); setParamNormalized(kParamBusCloseGain + i, std::clamp(f / 1.25f, 0.0f, 1.0f));
         s.readInt8(b);  setParamNormalized(kParamBusCloseBypass + i, b ? 1.0 : 0.0);
     }
-    s.readInt8(b); setParamNormalized(kParamGlobalFakeRR, b ? 1.0 : 0.0);
-    s.readInt8(b); setParamNormalized(kParamGlobalFakeVel, b ? 1.0 : 0.0);
     s.readInt8(b); setParamNormalized(kParamGlobalFakeMic, b ? 1.0 : 0.0);
 
     s.readInt8(b); setParamNormalized(kParamFilterOn, b ? 1.0 : 0.0);
@@ -147,7 +143,7 @@ tresult PLUGIN_API WreckageController::setComponentState(IBStream* state) {
     s.readFloat(f); setParamNormalized(kParamCompAttack, (f - 0.5f) / 79.5f);
     s.readFloat(f); setParamNormalized(kParamCompRelease, (f - 15.0f) / 385.0f);
     s.readFloat(f); setParamNormalized(kParamCompKnee, f / 12.0f);
-    s.readFloat(f); setParamNormalized(kParamCompMakeup, f / 15.0f);
+    s.readFloat(f); setParamNormalized(kParamCompMakeup, f / 24.0f + 0.5f);
 
     s.readInt8(b); setParamNormalized(kParamSatOn, b ? 1.0 : 0.0);
     s.readFloat(f); setParamNormalized(kParamSatDrive, f);
@@ -196,20 +192,23 @@ tresult PLUGIN_API WreckageController::notify(IMessage* message) {
     if (!mid || !attrs) return EditControllerEx1::notify(message);
 
     if (strcmp(mid, "SlotUpdated") == 0) {
-        int64 sl = 0, ic = 0, col = 0, mn = kBaseMidiNote;
+        int64 sl = 0, ic = 0, col = 0, mn = kBaseMidiNote, fr = 1, fv = 1;
         double sx = 0.0, sy = 0.0;
         attrs->getInt("slot", sl); attrs->getInt("itemCount", ic);
         attrs->getInt("color", col); attrs->getInt("midiNote", mn);
+        attrs->getInt("fakeRR", fr); attrs->getInt("fakeVel", fv);
         attrs->getFloat("x", sx); attrs->getFloat("y", sy);
         auto& m = slotMirror(static_cast<int>(sl));
         m.itemCount = static_cast<int>(ic);
         m.midiNote  = static_cast<int>(mn);
         m.stageX    = static_cast<float>(sx);
         m.stageY    = static_cast<float>(sy);
+        m.fakeRR    = (fr != 0);
+        m.fakeVel   = (fv != 0);
         m.hasCustomColor = (col != 0);
         m.keyColor = static_cast<uint32_t>(col);
         if (m.itemCount == 0) m.waveItems.clear();
-        else if (static_cast<int>(m.waveItems.size()) < m.itemCount) m.waveItems.resize(static_cast<size_t>(m.itemCount));
+        else if (static_cast<int>(m.waveItems.size()) != m.itemCount) m.waveItems.resize(static_cast<size_t>(m.itemCount));
         const void* ptr = nullptr; uint32 sz = 0;
         if (attrs->getBinary("nameUtf8", ptr, sz) == kResultOk && ptr && sz > 0)
             m.name.assign(static_cast<const char*>(ptr), sz);
@@ -217,18 +216,16 @@ tresult PLUGIN_API WreckageController::notify(IMessage* message) {
     }
     if (strcmp(mid, "WaveUpdated") == 0) {
         int64 sl = 0, item = 0;
-        double st = 0.0, en = 1.0, fi = 0.0, fo = 0.0, vmin = 0.0, vmax = 1.0;
+        double st = 0.0, en = 1.0, fi = 0.0, fo = 0.0;
         attrs->getInt("slot", sl); attrs->getInt("item", item);
         attrs->getFloat("start", st); attrs->getFloat("end", en);
         attrs->getFloat("fadeIn", fi); attrs->getFloat("fadeOut", fo);
-        attrs->getFloat("velMin", vmin); attrs->getFloat("velMax", vmax);
         auto& m = slotMirror(static_cast<int>(sl));
         if (item >= 0) {
             if (static_cast<int>(m.waveItems.size()) <= item) m.waveItems.resize(static_cast<size_t>(item + 1));
             auto& wi = m.waveItems[static_cast<size_t>(item)];
             wi.startNorm = static_cast<float>(st); wi.endNorm = static_cast<float>(en);
             wi.fadeInNorm = static_cast<float>(fi); wi.fadeOutNorm = static_cast<float>(fo);
-            wi.velMin = static_cast<float>(vmin); wi.velMax = static_cast<float>(vmax);
             const void* ptr = nullptr; uint32 sz = 0;
             if (attrs->getBinary("peaks", ptr, sz) == kResultOk && ptr && sz == sizeof(float) * kWavePeakBins) {
                 std::memcpy(wi.peaks.data(), ptr, sz);
@@ -237,13 +234,19 @@ tresult PLUGIN_API WreckageController::notify(IMessage* message) {
         return kResultOk;
     }
     if (strcmp(mid, "Telemetry") == 0) {
-        int64 v = 0, rb = 0, lo = 0, hi = 0; double gr = 0.0;
+        int64 v = 0, rb = 0, lo = 0, hi = 0; double cpu = 0.0, gr = 0.0, ol = 0.0, ph = -1.0;
         attrs->getInt("voices", v); attrs->getInt("ramBytes", rb);
+        attrs->getFloat("cpuPct", cpu);
         attrs->getFloat("grDb", gr);
+        attrs->getFloat("outLvl", ol);
+        attrs->getFloat("playhead", ph);
         attrs->getInt("notesLo", lo); attrs->getInt("notesHi", hi);
         liveVoices_ = static_cast<int>(v);
         liveRamBytes_ = static_cast<uint64_t>(rb);
+        liveCpuPct_ = static_cast<float>(cpu);
         liveGrDb_ = static_cast<float>(gr);
+        liveOutLevel_ = static_cast<float>(ol);
+        livePlayheadNorm_ = static_cast<float>(ph);
         notesLo_ = static_cast<uint64_t>(lo);
         notesHi_ = static_cast<uint64_t>(hi);
         return kResultOk;
@@ -273,6 +276,14 @@ void WreckageController::uiTriggerNote(int midiNote, float vel, bool isOn) {
     }
 }
 
+void WreckageController::uiSelectSlot(int slotIdx) {
+    if (auto* msg = allocateMessage()) {
+        msg->setMessageID("SelectSlot");
+        msg->getAttributes()->setInt("slot", slotIdx);
+        sendMessage(msg); msg->release();
+    }
+}
+
 void WreckageController::uiPanic() {
     if (auto* msg = allocateMessage()) { msg->setMessageID("Panic"); sendMessage(msg); msg->release(); }
 }
@@ -285,6 +296,15 @@ void WreckageController::uiClearSlot(int slotIdx) {
     if (auto* msg = allocateMessage()) {
         msg->setMessageID("ClearSlot");
         msg->getAttributes()->setInt("slot", slotIdx);
+        sendMessage(msg); msg->release();
+    }
+}
+
+void WreckageController::uiDeleteWaveItem(int slotIdx, int itemIdx) {
+    if (auto* msg = allocateMessage()) {
+        msg->setMessageID("DeleteWaveItem");
+        msg->getAttributes()->setInt("slot", slotIdx);
+        msg->getAttributes()->setInt("item", itemIdx);
         sendMessage(msg); msg->release();
     }
 }
@@ -341,6 +361,8 @@ void WreckageController::uiSetSlotProp(int slotIdx, int prop, int ival, double f
     else if (prop == 8) m.purged = (ival != 0);
     else if (prop == 10) m.toneLow = static_cast<float>(fval);
     else if (prop == 11) m.toneHigh = static_cast<float>(fval);
+    else if (prop == 12) m.fakeRR = (ival != 0);
+    else if (prop == 13) m.fakeVel = (ival != 0);
 
     if (auto* msg = allocateMessage()) {
         msg->setMessageID("SetSlotProp");
@@ -364,8 +386,6 @@ void WreckageController::uiUpdateWaveEdit(int slotIdx, int itemIdx) {
         msg->getAttributes()->setFloat("end", wi.endNorm);
         msg->getAttributes()->setFloat("fadeIn", wi.fadeInNorm);
         msg->getAttributes()->setFloat("fadeOut", wi.fadeOutNorm);
-        msg->getAttributes()->setFloat("velMin", wi.velMin);
-        msg->getAttributes()->setFloat("velMax", wi.velMax);
         sendMessage(msg); msg->release();
     }
 }

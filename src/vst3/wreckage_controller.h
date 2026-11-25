@@ -15,8 +15,6 @@ struct UiWaveItem {
     float endNorm   = 1.0f;
     float fadeInNorm = 0.0f;
     float fadeOutNorm = 0.0f;
-    float velMin = 0.0f;
-    float velMax = 1.0f;
 };
 
 struct UiSlotMirror {
@@ -29,9 +27,11 @@ struct UiSlotMirror {
     float toneLow = 0.5f;
     float toneHigh = 0.5f;
     float attack = 0.0f;
-    float release = 0.145f;
+    float release = 0.295f; // ~1200 ms default
     float stageX = 0.0f;
     float stageY = 0.0f;
+    bool fakeRR = true;
+    bool fakeVel = true;
     bool oneShot = true;
     int chokeGroup = 0;
     bool reverse = false;
@@ -57,9 +57,11 @@ public:
 
     void uiSetParam(Steinberg::Vst::ParamID id, double normVal, bool beginEnd = true);
     void uiTriggerNote(int midiNote, float vel, bool isOn);
+    void uiSelectSlot(int slotIdx);
     void uiPanic();
     void uiResetKit();
     void uiClearSlot(int slotIdx);
+    void uiDeleteWaveItem(int slotIdx, int itemIdx);
     void uiResetStage();
     void uiSetStageXY(int slotIdx, float x, float y);
     void uiSetKeyColor(int slotIdx, uint32_t rgb);
@@ -78,7 +80,10 @@ public:
 
     int liveVoices() const { return liveVoices_; }
     uint64_t liveRamBytes() const { return liveRamBytes_; }
+    float liveCpuPct() const { return liveCpuPct_; }
     float liveGrDb() const { return liveGrDb_; }
+    float liveOutLevel() const { return liveOutLevel_; }
+    float livePlayheadNorm() const { return livePlayheadNorm_; }
     bool isMidiNoteLive(int note) const {
         if (note < 0 || note >= 128) return false;
         uint64_t mask = (note < 64) ? notesLo_ : notesHi_;
@@ -91,10 +96,13 @@ private:
     std::array<UiSlotMirror, kTotalSlots> slots_;
     std::wstring rootLibraryDir_;
     std::wstring lastSavedNm6Path_;
-    std::string activePresetName_ = "EMPTY KIT (DROP WAV)";
+    std::string activePresetName_ = "DEFAULT";
     int liveVoices_ = 0;
     uint64_t liveRamBytes_ = 0;
+    float liveCpuPct_ = 0.0f;
     float liveGrDb_ = 0.0f;
+    float liveOutLevel_ = 0.0f;
+    float livePlayheadNorm_ = -1.0f;
     uint64_t notesLo_ = 0;
     uint64_t notesHi_ = 0;
     int saveFlashTicks_ = 0;
