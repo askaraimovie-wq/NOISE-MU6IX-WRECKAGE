@@ -42,32 +42,26 @@ set(WRECKAGE_SOURCES
     src/vst3/wreckage_view_win.cpp
 )
 
-function(add_wreckage_vst3 TARGET_NAME IS_PLAYER_FLAG)
-    smtg_add_vst3plugin(${TARGET_NAME} ${WRECKAGE_SOURCES})
-    target_include_directories(${TARGET_NAME} PRIVATE
-        "${CMAKE_CURRENT_SOURCE_DIR}/src/core"
-        "${CMAKE_CURRENT_SOURCE_DIR}/src/vst3"
-        "${CMAKE_CURRENT_BINARY_DIR}/generated"
-        "${CMAKE_CURRENT_SOURCE_DIR}/third_party/flac/include"
+smtg_add_vst3plugin(WRECKAGE ${WRECKAGE_SOURCES})
+target_include_directories(WRECKAGE PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/core"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/vst3"
+    "${CMAKE_CURRENT_BINARY_DIR}/generated"
+    "${CMAKE_CURRENT_SOURCE_DIR}/third_party/flac/include"
+)
+target_compile_definitions(WRECKAGE PRIVATE
+    WRECKAGE_USE_FLAC=1
+    FLAC__NO_DLL=1
+    UNICODE
+    _UNICODE
+    NOMINMAX
+)
+target_link_libraries(WRECKAGE PRIVATE
+    sdk
+    FLAC::FLAC
+)
+if(WIN32)
+    target_link_libraries(WRECKAGE PRIVATE
+        legacy_stdio_definitions d2d1 dwrite ole32 shell32 comdlg32 uuid shlwapi user32 gdi32
     )
-    target_compile_definitions(${TARGET_NAME} PRIVATE
-        WRECKAGE_IS_PLAYER=${IS_PLAYER_FLAG}
-        WRECKAGE_USE_FLAC=1
-        FLAC__NO_DLL=1
-        UNICODE
-        _UNICODE
-        NOMINMAX
-    )
-    target_link_libraries(${TARGET_NAME} PRIVATE
-        sdk
-        FLAC::FLAC
-    )
-    if(WIN32)
-        target_link_libraries(${TARGET_NAME} PRIVATE
-            legacy_stdio_definitions d2d1 dwrite ole32 shell32 comdlg32 uuid shlwapi user32 gdi32
-        )
-    endif()
-endfunction()
-
-add_wreckage_vst3(WRECKAGE 0)
-add_wreckage_vst3(WRECKAGE_Player 1)
+endif()
