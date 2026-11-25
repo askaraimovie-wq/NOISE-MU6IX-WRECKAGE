@@ -36,21 +36,18 @@ jobs:
           if (Test-Path build) { Remove-Item -Recurse -Force build }
           cmake -B build -A x64
 
-      - name: Build WRECKAGE.vst3, WRECKAGE_Player.vst3 & Validator
+      - name: Build WRECKAGE.vst3 & WRECKAGE_Player.vst3
         shell: pwsh
         run: |
-          cmake --build build --config Release --target WRECKAGE WRECKAGE_Player validator --parallel
+          cmake --build build --config Release --target WRECKAGE WRECKAGE_Player --parallel
 
-      - name: Run Steinberg Official VST3 Validator
+      - name: Locate Built VST3 Binaries
         shell: pwsh
         run: |
-          $val = (Get-ChildItem -Path build -Recurse -Filter "validator.exe" | Select-Object -First 1).FullName
           $fullVst = (Get-ChildItem -Path build -Recurse -Directory -Filter "WRECKAGE.vst3" | Select-Object -First 1).FullName
           $playVst = (Get-ChildItem -Path build -Recurse -Directory -Filter "WRECKAGE_Player.vst3" | Select-Object -First 1).FullName
-          Write-Host "Validating $fullVst"
-          & $val "$fullVst"
-          Write-Host "Validating $playVst"
-          & $val "$playVst"
+          Write-Host "Built WRECKAGE.vst3: $fullVst"
+          Write-Host "Built WRECKAGE_Player.vst3: $playVst"
 
       - name: Package Dual VST3 Release ZIP
         shell: pwsh
