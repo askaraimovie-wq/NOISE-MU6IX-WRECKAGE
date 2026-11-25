@@ -153,7 +153,7 @@ private:
     Biquad hpL_, hpR_, lpL_, lpR_;
 };
 
-class LfeSubBus {
+class SubBassBus {
 public:
     void prepare(float sr) {
         lp1_.setLowPass(sr, 95.0f, 0.85f);
@@ -174,35 +174,6 @@ public:
 private:
     Biquad lp1_, lp2_, subPeak_;
     DCBlocker dc_;
-};
-
-class CrushBus {
-public:
-    void prepare(float sr) {
-        hpL_.setHighPass(sr, 80.0f); hpR_.setHighPass(sr, 80.0f);
-        midL_.setPeaking(sr, 1200.0f, 0.8f, 4.5f);
-        midR_.setPeaking(sr, 1200.0f, 0.8f, 4.5f);
-        dcL_.setSampleRate(sr); dcR_.setSampleRate(sr);
-        att_ = std::exp(-1.0f / (sr * 0.0015f));
-        rel_ = std::exp(-1.0f / (sr * 0.065f));
-        env_ = 0.0f;
-    }
-    inline void process(float inL, float inR, float& outL, float& outR) {
-        float l = midL_.process(hpL_.process(inL));
-        float r = midR_.process(hpR_.process(inR));
-        float pk = std::max(std::fabs(l), std::fabs(r));
-        env_ = (pk > env_) ? (att_ * env_ + (1.0f - att_) * pk)
-                           : (rel_ * env_ + (1.0f - rel_) * pk);
-        float gr = (env_ > 0.12f) ? (0.12f / (0.12f + (env_ - 0.12f) * 5.0f)) : 1.0f;
-        l = dcL_.process(fastTanh((l * gr * 3.8f) + 0.08f) - 0.075f);
-        r = dcR_.process(fastTanh((r * gr * 3.8f) + 0.08f) - 0.075f);
-        outL = l * 0.72f;
-        outR = r * 0.72f;
-    }
-private:
-    Biquad hpL_, hpR_, midL_, midR_;
-    DCBlocker dcL_, dcR_;
-    float att_ = 0.9f, rel_ = 0.999f, env_ = 0.0f;
 };
 
 class MasterFxRack {
@@ -240,24 +211,33 @@ public:
     }
 
     inline void process(float& l, float& r,
+                        bool filterOn, bool eqOn, bool compOn, bool transientOn, bool punishOn,
                         float compAmt, float transientPunch, float stereoWidth, bool monoBass,
                         float punishAmt, PunishMode punishMode, bool limiterOn, float outGain) {
-        l = eqHighL_.process(eqMidL_.process(eqLowL_.process(lpfL_.process(hpfL_.process(l)))));
-        r = eqHighR_.process(eqMidR_.process(eqLowR_.process(lpfR_.process(hpfR_.process(r)))));
-
-        float punchDelta = (transientPunch - 0.5f) * 2.0f;
-        if (std::fabs(punchDelta) > 0.01f) {
-            float det = std::max(std::fabs(l), std::fabs(r));
-            envFast_ = (det > envFast_) ? (fastAtt_ * envFast_ + (1.0f - fastAtt_) * det)
-                                        : (fastRel_ * envFast_ + (1.0f - fastRel_) * det);
-            envSlow_ = (det > envSlow_) ? (slowAtt_ * envSlow_ + (1.0f - slowAtt_) * det)
-                                        : (slowRel_ * envSlow_ + (1.0f - slowRel_) * det);
-            float trans = std::max(0.0f, envFast_ - envSlow_);
-            float gain = std::clamp(1.0f + punchDelta * trans * 3.2f, 0.35f, 2.4f);
-            l *= gain; r *= gain;
+        if (filterOn) {
+            l = lpfL_.process(hpfL_.process(l));
+            r = lpfR_.process(hpfR_.process(r));
+        }
+        if (eqOn) {
+            l = eqHighL_.process(eqMidL_.process(eqLowL_.process(l)));
+            r = eqHighR_.process(eqMidR_.process(eqLowR_.process(r)));
         }
 
-        if (compAmt > 0.01f) {
+        if (transientOn) {
+            float punchDelta = (transientPunch - 0.5f) * 2.0f;
+            if (std::fabs(punchDelta) > 0.01f) {
+                float det = std::max(std::fabs(l), std::fabs(r));
+                envFast_ = (det > envFast_) ? (fastAtt_ * envFast_ + (1.0f - fastAtt_) * det)
+                                            : (fastRel_ * envFast_ + (1.0f - fastRel_) * det);
+                envSlow_ = (det > envSlow_) ? (slowAtt_ * envSlow_ + (1.0f - slowAtt_) * det)
+                                            : (slowRel_ * envSlow_ + (1.0f - slowRel_) * det);
+                float trans = std::max(0.0f, envFast_ - envSlow_);
+                float gain = std::clamp(1.0f + punchDelta * trans * 3.2f, 0.35f, 2.4f);
+                l *= gain; r *= gain;
+            }
+        }
+
+        if (compOn && compAmt > 0.01f) {
             float det = std::max(std::fabs(l), std::fabs(r));
             compEnv_ = (det > compEnv_) ? (compAtt_ * compEnv_ + (1.0f - compAtt_) * det)
                                         : (compRel_ * compEnv_ + (1.0f - compRel_) * det);
@@ -284,7 +264,7 @@ public:
             l = mid + side; r = mid - side;
         }
 
-        if (punishAmt > 0.005f) {
+        if (punishOn && punishAmt > 0.005f) {
             float drive = 1.0f;
             float asym = 0.0f;
             float wetMix = punishAmt;

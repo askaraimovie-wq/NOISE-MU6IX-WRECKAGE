@@ -17,19 +17,19 @@
 namespace NoiseMu6ix {
 
 struct MultiMicSample {
-    std::array<std::shared_ptr<AudioBuffer>, 5> mics;
+    std::array<std::shared_ptr<AudioBuffer>, 4> mics; // 0:Close, 1:Room, 2:Hall, 3:Sub
     bool hasMic(MicBus m) const {
         auto idx = static_cast<size_t>(m);
-        return idx < 5 && mics[idx] && !mics[idx]->empty();
+        return idx < 4 && mics[idx] && !mics[idx]->empty();
     }
     int realMicCount() const {
         int c = 0;
-        for (int i = 0; i < 5; ++i) if (mics[i] && !mics[i]->empty()) ++c;
+        for (int i = 0; i < 4; ++i) if (mics[i] && !mics[i]->empty()) ++c;
         return c;
     }
     std::shared_ptr<AudioBuffer> primarySource() const {
         if (hasMic(MicBus::Close)) return mics[0];
-        for (int i = 1; i < 5; ++i) {
+        for (int i = 1; i < 4; ++i) {
             if (mics[static_cast<size_t>(i)] && !mics[static_cast<size_t>(i)]->empty()) {
                 return mics[static_cast<size_t>(i)];
             }
@@ -50,6 +50,8 @@ struct SlotConfig {
 
     float gain = 0.85f;
     float pitchSemitones = 0.0f;
+    float toneLowDb = 0.0f;
+    float toneHighDb = 0.0f;
     float attackMs = 0.0f;
     float releaseMs = 600.0f;
     float xfade = 0.0f;
@@ -113,27 +115,33 @@ struct Voice {
     Biquad formantL, formantR;
     Biquad velLpfL, velLpfR;
     Biquad stageLpfL, stageLpfR;
+    Biquad toneLowL, toneLowR, toneHiL, toneHiR;
     bool useFormant = false;
     bool useVelLpf = false;
+    bool useToneEq = false;
     float velDrive = 0.0f;
     float pitchDropCents = 0.0f;
     float pitchDropDecay = 0.997f;
 
     bool synthRoom = false;
     bool synthHall = false;
-    bool synthLfe  = false;
-    bool synthCrush = false;
-    bool hasRealRoom  = false;
-    bool hasRealHall  = false;
-    bool hasRealLfe   = false;
-    bool hasRealCrush = false;
+    bool synthSub  = false;
+    bool hasRealRoom = false;
+    bool hasRealHall = false;
+    bool hasRealSub  = false;
 
     uint64_t age = 0;
 };
 
 struct EngineParams {
-    float busGain[5]   = { 0.85f, 0.55f, 0.45f, 0.60f, 0.35f };
-    bool  busBypass[5] = { false, false, false, false, false };
+    float busGain[4]   = { 0.85f, 0.50f, 0.45f, 0.55f };
+    bool  busBypass[4] = { false, false, false, false };
+
+    bool  filterOn = true;
+    bool  eqOn = true;
+    bool  compOn = true;
+    bool  transientOn = true;
+    bool  punishOn = true;
 
     float masterHpfHz = 25.0f;
     float masterLpfHz = 19500.0f;
@@ -153,16 +161,16 @@ struct EngineParams {
 
     float stageMasterDepth = 1.0f;
     float smartIntensity = 0.80f;
-    int   themeIndex = 0;
-    int   zoomIndex = 2;
+    int   themeIndex = 0; // Paper Sketch default
+    int   zoomIndex = 1;  // 75% default
 };
 
 struct ProcessBuffers {
     float* mainL = nullptr;
     float* mainR = nullptr;
-    float* auxL[5] = { nullptr, nullptr, nullptr, nullptr, nullptr };
-    float* auxR[5] = { nullptr, nullptr, nullptr, nullptr, nullptr };
-    bool   auxActive[5] = { false, false, false, false, false };
+    float* auxL[4] = { nullptr, nullptr, nullptr, nullptr };
+    float* auxR[4] = { nullptr, nullptr, nullptr, nullptr };
+    bool   auxActive[4] = { false, false, false, false };
     int    numSamples = 0;
     bool   offlineRender = false;
 };
@@ -170,22 +178,34 @@ struct ProcessBuffers {
 class WreckageEngine {
 public:
     WreckageEngine() {
+        resetStageSpread();
         for (int i = 0; i < kTotalSlots; ++i) {
             slots_[i].midiNote = kBaseMidiNote + i;
-            slots_[i].name = "SLOT " + std::to_string(i + 1);
-            float angle = -0.75f + 1.5f * (static_cast<float>(i % 12) / 11.0f);
-            slots_[i].stageX = std::clamp(angle, -0.85f, 0.85f);
-            slots_[i].stageY = 0.18f + 0.25f * static_cast<float>(i / 12);
+            slots_[i].name = "EMPTY";
         }
-        installBuiltInTestKit();
+    }
+
+    void resetStageSpread() {
+        // Neat semi-circular fan layout across X (-0.8..+0.8) and Y (0.15..0.82) so no dots overlap
+        static constexpr float kSpreadX[12] = {
+            0.00f, -0.22f, 0.22f, -0.45f, 0.45f, -0.15f,
+            0.15f, -0.68f, 0.68f, -0.35f, 0.35f,  0.00f
+        };
+        static constexpr float kSpreadY[12] = {
+            0.14f, 0.22f, 0.22f, 0.34f, 0.34f, 0.44f,
+            0.44f, 0.56f, 0.56f, 0.68f, 0.68f, 0.80f
+        };
+        for (int i = 0; i < kTotalSlots; ++i) {
+            slots_[i].stageX = kSpreadX[i % 12];
+            slots_[i].stageY = kSpreadY[i % 12];
+        }
     }
 
     void prepare(double sampleRate) {
         sr_ = static_cast<float>(std::max(8000.0, sampleRate));
         roomBus_.prepare(sr_, 8.0f, 0.75f, 120.0f, 9000.0f);
         hallBus_.prepare(sr_, 24.0f, 3.20f, 140.0f, 6200.0f);
-        lfeBus_.prepare(sr_);
-        crushBus_.prepare(sr_);
+        subBus_.prepare(sr_);
         masterFx_.prepare(sr_);
         for (auto& v : voices_) v.active = false;
     }
@@ -196,6 +216,36 @@ public:
     SlotConfig& slot(int idx) { return slots_[std::clamp(idx, 0, kTotalSlots - 1)]; }
     const SlotConfig& slot(int idx) const { return slots_[std::clamp(idx, 0, kTotalSlots - 1)]; }
 
+    int activeVoiceCount() const { return activeVoices_.load(std::memory_order_relaxed); }
+
+    uint64_t totalSampleRamBytes() const {
+        uint64_t bytes = 0;
+        for (const auto& s : slots_) {
+            for (const auto& vl : s.layers) {
+                for (const auto& rr : vl.roundRobins) {
+                    for (int m = 0; m < 4; ++m) {
+                        if (rr.mics[static_cast<size_t>(m)]) {
+                            bytes += rr.mics[static_cast<size_t>(m)]->numFrames() * 2 * sizeof(float);
+                        }
+                    }
+                }
+            }
+        }
+        return bytes;
+    }
+
+    bool isNotePlaying(int midiNote) const {
+        if (midiNote < 0 || midiNote >= 128) return false;
+        return notePlaying_[midiNote].load(std::memory_order_relaxed) > 0;
+    }
+
+    void panicAllNotesOff() {
+        std::lock_guard<std::mutex> lock(stateMutex_);
+        for (auto& v : voices_) v.active = false;
+        for (int i = 0; i < 128; ++i) notePlaying_[i].store(0, std::memory_order_relaxed);
+        activeVoices_.store(0, std::memory_order_relaxed);
+    }
+
     bool loadSampleIntoSlot(int slotIdx, const std::filesystem::path& filePath,
                             int explicitVel = -1, int explicitRR = -1, int explicitMic = -1) {
         auto buf = std::make_shared<AudioBuffer>();
@@ -205,7 +255,7 @@ public:
         auto meta = SampleAutoParser::parseFilename(fname);
         int vIdx = (explicitVel >= 0) ? explicitVel : meta.velocityIndex;
         int rIdx = (explicitRR  >= 0) ? explicitRR  : meta.rrIndex;
-        MicBus mic = (explicitMic >= 0 && explicitMic < 5) ? static_cast<MicBus>(explicitMic) : meta.mic;
+        MicBus mic = (explicitMic >= 0 && explicitMic < 4) ? static_cast<MicBus>(explicitMic) : meta.mic;
 
         std::lock_guard<std::mutex> lock(stateMutex_);
         auto& s = slot(slotIdx);
@@ -213,8 +263,12 @@ public:
         auto& vl = s.layers[static_cast<size_t>(vIdx)];
         if (static_cast<int>(vl.roundRobins.size()) <= rIdx) vl.roundRobins.resize(static_cast<size_t>(rIdx + 1));
         vl.roundRobins[static_cast<size_t>(rIdx)].mics[static_cast<size_t>(mic)] = buf;
-        if (s.name.rfind("SLOT ", 0) == 0 || s.name == "EMPTY") {
+        if (s.name == "EMPTY" || s.name.rfind("SLOT ", 0) == 0) {
             s.name = meta.cleanInstrumentName;
+        }
+        if (!s.hasCustomColor) {
+            s.keyColor = kStudioKeyColors[slotIdx % kNumKeyColors];
+            s.hasCustomColor = true;
         }
         s.purged = false;
         return true;
@@ -224,6 +278,10 @@ public:
         std::lock_guard<std::mutex> lock(stateMutex_);
         velocity01 = std::clamp(velocity01, 0.01f, 1.0f);
         float shapedVel = applyVelocityCurve(velocity01);
+
+        if (midiNote >= 0 && midiNote < 128) {
+            notePlaying_[midiNote].fetch_add(1, std::memory_order_relaxed);
+        }
 
         for (int sIdx = 0; sIdx < kTotalSlots; ++sIdx) {
             auto& s = slots_[sIdx];
@@ -239,13 +297,14 @@ public:
             }
             spawnVoice(sIdx, midiNote, shapedVel);
         }
-        if (midiNote >= 0 && midiNote < 128) {
-            activeKeyFlash_[midiNote].store(1.0f, std::memory_order_relaxed);
-        }
     }
 
     void triggerNoteOff(int midiNote) {
         std::lock_guard<std::mutex> lock(stateMutex_);
+        if (midiNote >= 0 && midiNote < 128) {
+            int cur = notePlaying_[midiNote].load(std::memory_order_relaxed);
+            notePlaying_[midiNote].store(std::max(0, cur - 1), std::memory_order_relaxed);
+        }
         for (auto& v : voices_) {
             if (v.active && !v.oneShot && v.midiNote == midiNote) {
                 v.releasing = true;
@@ -274,7 +333,7 @@ public:
             bool firstSamp = true;
             for (size_t v = 0; v < s.layers.size(); ++v) {
                 for (size_t r = 0; r < s.layers[v].roundRobins.size(); ++r) {
-                    for (int mic = 0; mic < 5; ++mic) {
+                    for (int mic = 0; mic < 4; ++mic) {
                         const auto& ptr = s.layers[v].roundRobins[r].mics[static_cast<size_t>(mic)];
                         if (!ptr || ptr->empty()) continue;
                         uint32_t sid = pack.addOrFindSample(*ptr);
@@ -292,17 +351,87 @@ public:
         return pack.saveAtomic(targetPath);
     }
 
+    bool loadKitFromNm6(const std::filesystem::path& packPath) {
+        Nm6Pack pack;
+        if (!pack.loadFromFile(packPath)) return false;
+
+        std::vector<std::shared_ptr<AudioBuffer>> decoded(pack.samples.size());
+        for (size_t i = 0; i < pack.samples.size(); ++i) {
+            auto b = std::make_shared<AudioBuffer>();
+            if (pack.decodeSample(static_cast<uint32_t>(i), *b)) {
+                decoded[i] = b;
+            }
+        }
+
+        std::lock_guard<std::mutex> lock(stateMutex_);
+        for (auto& v : voices_) v.active = false;
+        for (int i = 0; i < kTotalSlots; ++i) {
+            slots_[i].layers.clear();
+            slots_[i].name = "EMPTY";
+            slots_[i].hasCustomColor = false;
+        }
+
+        const std::string& js = pack.kitMetadataJson;
+        size_t pos = 0;
+        while ((pos = js.find("{\"i\":", pos)) != std::string::npos) {
+            int idx = std::atoi(js.c_str() + pos + 5);
+            size_t endObj = js.find("]}", pos);
+            if (endObj == std::string::npos) break;
+            std::string chunk = js.substr(pos, endObj - pos + 2);
+            if (idx >= 0 && idx < kTotalSlots) {
+                auto& s = slots_[idx];
+                auto nPos = chunk.find("\"n\":\"");
+                if (nPos != std::string::npos) {
+                    auto nEnd = chunk.find("\"", nPos + 5);
+                    if (nEnd != std::string::npos) s.name = chunk.substr(nPos + 5, nEnd - (nPos + 5));
+                }
+                auto mPos = chunk.find("\"m\":");
+                if (mPos != std::string::npos) s.midiNote = std::atoi(chunk.c_str() + mPos + 4);
+                auto cPos = chunk.find("\"c\":");
+                if (cPos != std::string::npos) {
+                    s.keyColor = static_cast<uint32_t>(std::strtoul(chunk.c_str() + cPos + 4, nullptr, 10));
+                    s.hasCustomColor = (s.keyColor != 0);
+                }
+                auto xPos = chunk.find("\"x\":");
+                if (xPos != std::string::npos) s.stageX = std::strtof(chunk.c_str() + xPos + 4, nullptr);
+                auto yPos = chunk.find("\"y\":");
+                if (yPos != std::string::npos) s.stageY = std::strtof(chunk.c_str() + yPos + 4, nullptr);
+
+                auto sArr = chunk.find("\"s\":[");
+                if (sArr != std::string::npos) {
+                    size_t p = sArr + 5;
+                    while ((p = chunk.find('[', p)) != std::string::npos) {
+                        int v = 0, r = 0, mic = 0, sid = 0;
+                        if (std::sscanf(chunk.c_str() + p, "[%d,%d,%d,%d]", &v, &r, &mic, &sid) == 4) {
+                            if (v >= 0 && r >= 0 && mic >= 0 && mic < 4 &&
+                                sid >= 0 && static_cast<size_t>(sid) < decoded.size() && decoded[sid]) {
+                                if (static_cast<int>(s.layers.size()) <= v) s.layers.resize(static_cast<size_t>(v + 1));
+                                if (static_cast<int>(s.layers[v].roundRobins.size()) <= r)
+                                    s.layers[v].roundRobins.resize(static_cast<size_t>(r + 1));
+                                s.layers[v].roundRobins[r].mics[static_cast<size_t>(mic)] = decoded[sid];
+                            }
+                        }
+                        p = chunk.find(']', p);
+                        if (p == std::string::npos) break;
+                        ++p;
+                    }
+                }
+            }
+            pos = endObj + 2;
+        }
+        return true;
+    }
+
     void process(ProcessBuffers& pb) {
         if (!pb.mainL || !pb.mainR || pb.numSamples <= 0) return;
 
         masterFx_.updateFilters(params_.masterHpfHz, params_.masterLpfHz,
                                 params_.eqLowDb, params_.eqMidDb, params_.eqHighDb);
 
+        bool runClose = !params_.busBypass[0] && params_.busGain[0] > 0.001f;
         bool runRoom  = !params_.busBypass[1] && params_.busGain[1] > 0.001f;
         bool runHall  = !params_.busBypass[2] && params_.busGain[2] > 0.001f;
-        bool runLfe   = !params_.busBypass[3] && params_.busGain[3] > 0.001f;
-        bool runCrush = !params_.busBypass[4] && params_.busGain[4] > 0.001f;
-        bool runClose = !params_.busBypass[0] && params_.busGain[0] > 0.001f;
+        bool runSub   = !params_.busBypass[3] && params_.busGain[3] > 0.001f;
 
         std::unique_lock<std::mutex> lock(stateMutex_, std::try_to_lock);
         if (!lock.owns_lock() && !pb.offlineRender) {
@@ -316,8 +445,7 @@ public:
             float sumCloseL = 0.0f, sumCloseR = 0.0f;
             float sumRoomRealL = 0.0f, sumRoomRealR = 0.0f, sendRoomL = 0.0f, sendRoomR = 0.0f;
             float sumHallRealL = 0.0f, sumHallRealR = 0.0f, sendHallL = 0.0f, sendHallR = 0.0f;
-            float sumLfeRealL  = 0.0f, sumLfeRealR  = 0.0f, sendLfeL  = 0.0f, sendLfeR  = 0.0f;
-            float sumCrushRealL= 0.0f, sumCrushRealR= 0.0f, sendCrushL= 0.0f, sendCrushR= 0.0f;
+            float sumSubRealL  = 0.0f, sumSubRealR  = 0.0f, sendSubL  = 0.0f, sendSubR  = 0.0f;
 
             for (auto& v : voices_) {
                 if (!v.active || !v.primaryBuf) continue;
@@ -341,6 +469,10 @@ public:
                     continue;
                 }
 
+                if (v.useToneEq) {
+                    cL = v.toneHiL.process(v.toneLowL.process(cL));
+                    cR = v.toneHiR.process(v.toneLowR.process(cR));
+                }
                 if (v.useFormant) {
                     cL = v.formantL.process(cL);
                     cR = v.formantR.process(cR);
@@ -386,22 +518,13 @@ public:
                     sendHallR += stagedR * hallDepthSend;
                 }
 
-                if (v.hasRealLfe) {
+                if (v.hasRealSub) {
                     float ll = 0.0f, lr = 0.0f;
                     readHermite(*v.sample.mics[3], v.playPos, v.reverse, ll, lr);
                     float m = 0.5f * (ll + lr) * totalGain;
-                    sumLfeRealL += m; sumLfeRealR += m;
-                } else if (v.synthLfe && runLfe) {
-                    sendLfeL += stagedL; sendLfeR += stagedR;
-                }
-
-                if (v.hasRealCrush) {
-                    float kl = 0.0f, kr = 0.0f;
-                    readHermite(*v.sample.mics[4], v.playPos, v.reverse, kl, kr);
-                    sumCrushRealL += kl * totalGain * v.panL;
-                    sumCrushRealR += kr * totalGain * v.panR;
-                } else if (v.synthCrush && runCrush) {
-                    sendCrushL += stagedL; sendCrushR += stagedR;
+                    sumSubRealL += m; sumSubRealR += m;
+                } else if (v.synthSub && runSub) {
+                    sendSubL += stagedL; sendSubR += stagedR;
                 }
 
                 double curStep = v.pitchRatio;
@@ -412,8 +535,8 @@ public:
                 v.playPos += curStep;
             }
 
-            float busL[5] = { 0, 0, 0, 0, 0 };
-            float busR[5] = { 0, 0, 0, 0, 0 };
+            float busL[4] = { 0, 0, 0, 0 };
+            float busR[4] = { 0, 0, 0, 0 };
 
             if (runClose) {
                 busL[0] = sumCloseL * params_.busGain[0];
@@ -431,21 +554,15 @@ public:
                 busL[2] = (sumHallRealL + sL) * params_.busGain[2];
                 busR[2] = (sumHallRealR + sR) * params_.busGain[2];
             }
-            if (runLfe) {
+            if (runSub) {
                 float sL = 0.0f, sR = 0.0f;
-                lfeBus_.process(sendLfeL, sendLfeR, sL, sR);
-                busL[3] = (sumLfeRealL + sL) * params_.busGain[3];
-                busR[3] = (sumLfeRealR + sR) * params_.busGain[3];
-            }
-            if (runCrush) {
-                float sL = 0.0f, sR = 0.0f;
-                crushBus_.process(sendCrushL, sendCrushR, sL, sR);
-                busL[4] = (sumCrushRealL + sL) * params_.busGain[4];
-                busR[4] = (sumCrushRealR + sR) * params_.busGain[4];
+                subBus_.process(sendSubL, sendSubR, sL, sR);
+                busL[3] = (sumSubRealL + sL) * params_.busGain[3];
+                busR[3] = (sumSubRealR + sR) * params_.busGain[3];
             }
 
             float mainL = 0.0f, mainR = 0.0f;
-            for (int b = 0; b < 5; ++b) {
+            for (int b = 0; b < 4; ++b) {
                 if (pb.auxActive[b] && pb.auxL[b] && pb.auxR[b]) {
                     pb.auxL[b][n] = busL[b];
                     pb.auxR[b][n] = busR[b];
@@ -456,6 +573,7 @@ public:
             }
 
             masterFx_.process(mainL, mainR,
+                              params_.filterOn, params_.eqOn, params_.compOn, params_.transientOn, params_.punishOn,
                               params_.compAmount, params_.transientPunch, params_.stereoWidth,
                               params_.monoBass, params_.punishAmount, params_.punishMode,
                               params_.limiterOn, params_.masterOutGain);
@@ -463,6 +581,10 @@ public:
             pb.mainL[n] = mainL;
             pb.mainR[n] = mainR;
         }
+
+        int cnt = 0;
+        for (const auto& v : voices_) if (v.active) ++cnt;
+        activeVoices_.store(cnt, std::memory_order_relaxed);
     }
 
 private:
@@ -573,6 +695,15 @@ private:
         v.stageLpfL.setLowPass(sr_, depthCutoff); v.stageLpfR.setLowPass(sr_, depthCutoff);
         v.stageLpfL.reset(); v.stageLpfR.reset();
 
+        v.useToneEq = (std::fabs(s.toneLowDb) > 0.05f || std::fabs(s.toneHighDb) > 0.05f);
+        if (v.useToneEq) {
+            v.toneLowL.setPeaking(sr_, 110.0f, 0.8f, s.toneLowDb);
+            v.toneLowR.setPeaking(sr_, 110.0f, 0.8f, s.toneLowDb);
+            v.toneHiL.setPeaking(sr_, 6500.0f, 0.8f, s.toneHighDb);
+            v.toneHiR.setPeaking(sr_, 6500.0f, 0.8f, s.toneHighDb);
+            v.toneLowL.reset(); v.toneLowR.reset(); v.toneHiL.reset(); v.toneHiR.reset();
+        }
+
         static constexpr float kStartMs[4]    = { 0.0f, 1.2f, 2.4f, 0.6f };
         static constexpr float kFormantHz[4]  = { 340.0f, 520.0f, 680.0f, 440.0f };
         static constexpr float kFormantDb[4]  = { 1.4f, -1.3f, 1.1f, -0.9f };
@@ -610,75 +741,28 @@ private:
         v.pitchDropCents = (vel > 0.75f) ? (24.0f * (vel - 0.75f) * 4.0f * velStrength) : 0.0f;
         v.pitchDropDecay = std::exp(-1.0f / (sr_ * 0.025f));
 
-        v.hasRealRoom  = mm.hasMic(MicBus::Room);
-        v.hasRealHall  = mm.hasMic(MicBus::Hall);
-        v.hasRealLfe   = mm.hasMic(MicBus::LFE);
-        v.hasRealCrush = mm.hasMic(MicBus::Crush);
+        v.hasRealRoom = mm.hasMic(MicBus::Room);
+        v.hasRealHall = mm.hasMic(MicBus::Hall);
+        v.hasRealSub  = mm.hasMic(MicBus::Sub);
 
-        v.synthRoom  = enableFakeMics && !v.hasRealRoom;
-        v.synthHall  = enableFakeMics && !v.hasRealHall;
-        v.synthLfe   = enableFakeMics && !v.hasRealLfe;
-        v.synthCrush = enableFakeMics && !v.hasRealCrush;
-    }
-
-    void installBuiltInTestKit() {
-        auto makeDrum = [](float baseHz, float pitchDrop, float decaySec, float noiseAmt) {
-            auto b = std::make_shared<AudioBuffer>();
-            b->sampleRate = 44100;
-            size_t n = static_cast<size_t>(44100.0f * decaySec);
-            b->left.resize(n); b->right.resize(n);
-            double phase = 0.0;
-            uint32_t rng = 1234567u;
-            for (size_t i = 0; i < n; ++i) {
-                float t = static_cast<float>(i) / 44100.0f;
-                float env = std::exp(-t / (decaySec * 0.24f));
-                float freq = baseHz + pitchDrop * std::exp(-t * 38.0f);
-                phase += 2.0 * kPi * freq / 44100.0;
-                rng = rng * 1664525u + 1013904223u;
-                float nSample = (static_cast<float>(static_cast<int32_t>(rng)) / 2147483648.0f) * noiseAmt * std::exp(-t * 24.0f);
-                float sig = fastTanh((static_cast<float>(std::sin(phase)) * env + nSample) * 1.4f);
-                b->left[i] = sig * 0.85f;
-                b->right[i] = sig * 0.85f;
-            }
-            return b;
-        };
-
-        struct PresetHit { int idx; const char* name; uint32_t color; float hz; float drop; float dec; float noise; int choke; };
-        const PresetHit hits[] = {
-            { 0, "TAIKO KICK",  kStudioKeyColors[0], 54.0f,  110.0f, 0.85f, 0.15f, 0 },
-            { 1, "SURDO LOW",   kStudioKeyColors[1], 72.0f,   85.0f, 0.70f, 0.18f, 0 },
-            { 2, "DHOL HIT",    kStudioKeyColors[3], 108.0f,  95.0f, 0.55f, 0.28f, 0 },
-            { 3, "THAVIL SNAP", kStudioKeyColors[3], 165.0f, 140.0f, 0.42f, 0.45f, 0 },
-            { 4, "EPIC SNARE",  kStudioKeyColors[5], 195.0f,  90.0f, 0.48f, 0.85f, 0 },
-            { 5, "STUDIO CLAP", kStudioKeyColors[5], 420.0f,  60.0f, 0.35f, 0.95f, 0 },
-            { 6, "HI-HAT CL",   kStudioKeyColors[7], 900.0f,  20.0f, 0.12f, 1.00f, 1 },
-            { 7, "HI-HAT OP",   kStudioKeyColors[7], 820.0f,  20.0f, 0.55f, 1.00f, 1 }
-        };
-        for (const auto& h : hits) {
-            auto& s = slots_[h.idx];
-            s.name = h.name;
-            s.keyColor = h.color;
-            s.hasCustomColor = true;
-            s.chokeGroup = h.choke;
-            s.layers.resize(1);
-            s.layers[0].roundRobins.resize(1);
-            s.layers[0].roundRobins[0].mics[0] = makeDrum(h.hz, h.drop, h.dec, h.noise);
-        }
+        v.synthRoom = enableFakeMics && !v.hasRealRoom;
+        v.synthHall = enableFakeMics && !v.hasRealHall;
+        v.synthSub  = enableFakeMics && !v.hasRealSub;
     }
 
     float sr_ = 44100.0f;
     EngineParams params_;
     std::array<SlotConfig, kTotalSlots> slots_;
     std::array<Voice, kMaxVoices> voices_;
-    std::array<std::atomic<float>, 128> activeKeyFlash_{};
+    std::array<std::atomic<int>, 128> notePlaying_{};
+    std::atomic<int> activeVoices_{0};
     uint64_t voiceCounter_ = 0;
     uint32_t rngState_ = 0x9E3779B9u;
     std::mutex stateMutex_;
 
     StereoSpaceBus roomBus_;
     StereoSpaceBus hallBus_;
-    LfeSubBus lfeBus_;
-    CrushBus crushBus_;
+    SubBassBus subBus_;
     MasterFxRack masterFx_;
 };
 

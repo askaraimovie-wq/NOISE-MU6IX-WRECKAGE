@@ -4,21 +4,19 @@
 namespace NoiseMu6ix {
 
 enum ParamIDs : uint32_t {
-    // 5-Bus Mixer Horizontal Faders (0.0 .. 1.0)
+    // 4-Bus Mixer Horizontal Faders (0.0 .. 1.0)
     kParamBusCloseGain   = 100,
     kParamBusRoomGain    = 101,
     kParamBusHallGain    = 102,
-    kParamBusLfeGain     = 103,
-    kParamBusCrushGain   = 104,
+    kParamBusSubGain     = 103,
 
-    // 5-Bus Individual Zero-CPU Bypass (0 = Active, 1 = Bypassed)
+    // 4-Bus Individual Zero-CPU Bypass (0 = Active, 1 = Bypassed)
     kParamBusCloseBypass = 110,
     kParamBusRoomBypass  = 111,
     kParamBusHallBypass  = 112,
-    kParamBusLfeBypass   = 113,
-    kParamBusCrushBypass = 114,
+    kParamBusSubBypass   = 113,
 
-    // Master FX Rack
+    // Master FX Rack + Individual On/Off Bypasses
     kParamMasterHPF      = 200,
     kParamMasterLPF      = 201,
     kParamEqLow          = 202,
@@ -31,6 +29,12 @@ enum ParamIDs : uint32_t {
     kParamVelCurve       = 209,
     kParamLimiterOn      = 210,
     kParamMasterOutGain  = 211,
+
+    kParamFilterOn       = 220,
+    kParamEqOn           = 221,
+    kParamCompOn         = 222,
+    kParamTransientOn    = 223,
+    kParamPunishOn       = 224,
 
     // Signature PUNISH Bar
     kParamPunishAmount   = 300,
@@ -55,9 +59,8 @@ enum class MicBus : uint8_t {
     Close = 0,
     Room  = 1,
     Hall  = 2,
-    LFE   = 3,
-    Crush = 4,
-    Count = 5
+    Sub   = 3,
+    Count = 4
 };
 
 enum class PunishMode : uint8_t {
@@ -74,9 +77,9 @@ enum class VelocityCurve : uint8_t {
 
 constexpr int kNumBanks        = 3;
 constexpr int kSlotsPerBank    = 12;
-constexpr int kTotalSlots      = kNumBanks * kSlotsPerBank; // 36 slots (C1..B3)
-constexpr int kBaseMidiNote    = 36; // C1
+constexpr int kTotalSlots      = kNumBanks * kSlotsPerBank; // 36 slots (C3..B5)
+constexpr int kBaseMidiNote    = 48; // C3 (Bank 1: C3-B3, Bank 2: C4-B4, Bank 3: C5-B5)
 constexpr int kMaxVoices       = 128;
-constexpr int kBaseUiSize      = 840; // 1:1 Square Base (50%=420, 75%=630, 100%=840)
+constexpr int kBaseUiSize      = 840;
 
 } // namespace NoiseMu6ix

@@ -48,9 +48,7 @@ public:
         } else if (hasToken(std::regex(R"((?:^|[\s_\-])(?:hall|far|amb|ambient)(?:$|[\s_\-]))"))) {
             meta.mic = MicBus::Hall; meta.hasExplicitMic = true;
         } else if (hasToken(std::regex(R"((?:^|[\s_\-])(?:lfe|sub)(?:$|[\s_\-]))"))) {
-            meta.mic = MicBus::LFE; meta.hasExplicitMic = true;
-        } else if (hasToken(std::regex(R"((?:^|[\s_\-])(?:crush|smash|trash|grit)(?:$|[\s_\-]))"))) {
-            meta.mic = MicBus::Crush; meta.hasExplicitMic = true;
+            meta.mic = MicBus::Sub; meta.hasExplicitMic = true;
         } else if (hasToken(std::regex(R"((?:^|[\s_\-])(?:close|cls|dry|spot)(?:$|[\s_\-]))"))) {
             meta.mic = MicBus::Close; meta.hasExplicitMic = true;
         }
