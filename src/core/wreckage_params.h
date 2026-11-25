@@ -55,7 +55,7 @@ enum ParamIDs : uint32_t {
     kParamDelayWidth     = 245,
     kParamDelayMix       = 246,
 
-    // Reverb (ValhallaVintageVerb 3D Space style)
+    // Reverb (ValhallaVintageVerb style)
     kParamRevOn          = 250,
     kParamRevMode        = 251,
     kParamRevPreDelay    = 252,
@@ -65,12 +65,10 @@ enum ParamIDs : uint32_t {
     kParamRevHighCut     = 256,
     kParamRevMix         = 257,
 
-    // Global Master & Global Fake Engines
+    // Global Master & Global Fake Mic (Fake RR & Fake Vel are Per-Key!)
     kParamLimiterOn      = 260,
     kParamMonoBass       = 261,
     kParamVelCurve       = 262,
-    kParamGlobalFakeRR   = 263,
-    kParamGlobalFakeVel  = 264,
     kParamGlobalFakeMic  = 265,
 
     // Signature PUNISH Bar

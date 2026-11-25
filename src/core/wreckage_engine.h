@@ -55,7 +55,11 @@ struct SlotConfig {
     float toneLowDb = 0.0f;
     float toneHighDb = 0.0f;
     float attackMs = 0.0f;
-    float releaseMs = 600.0f;
+    float releaseMs = 1200.0f;
+
+    // Per-Key Fake RR & Fake Velocity (Fake Mic stays Global)
+    bool fakeRR  = true;
+    bool fakeVel = true;
 
     bool oneShot = true;
     int chokeGroup = 0;
@@ -83,6 +87,7 @@ struct Voice {
     bool releasing = false;
     bool choking = false;
     int slotIndex = 0;
+    int itemIndex = 0;
     int midiNote = 0;
     int chokeGroup = 0;
     bool reverse = false;
@@ -105,6 +110,8 @@ struct Voice {
     float envVal = 0.0f;
     float attackInc = 1.0f;
     float releaseDec = 0.001f;
+    double totalDurationFrames = 0.0;
+    double releaseStartFrame = 0.0;
     float chokeFade = 1.0f;
     float chokeDec = 0.004f;
 
@@ -131,8 +138,6 @@ struct EngineParams {
     float busGain[4]   = { 0.85f, 0.50f, 0.45f, 0.55f };
     bool  busBypass[4] = { false, false, false, false };
 
-    bool  globalFakeRR  = true;
-    bool  globalFakeVel = true;
     bool  globalFakeMic = true;
 
     MasterFxParams fx;
@@ -177,7 +182,9 @@ public:
             slots_[i].toneLowDb = 0.0f;
             slots_[i].toneHighDb = 0.0f;
             slots_[i].attackMs = 0.0f;
-            slots_[i].releaseMs = 600.0f;
+            slots_[i].releaseMs = 1200.0f;
+            slots_[i].fakeRR = true;
+            slots_[i].fakeVel = true;
             slots_[i].purged = false;
         }
         activeVoices_.store(0, std::memory_order_relaxed);
@@ -194,6 +201,24 @@ public:
         s.purged = false;
     }
 
+    void deleteWaveItem(int slotIdx, int itemIdx) {
+        std::lock_guard<std::mutex> lock(stateMutex_);
+        for (auto& v : voices_) {
+            if (v.active && v.slotIndex == slotIdx) v.active = false;
+        }
+        auto& s = slot(slotIdx);
+        if (itemIdx >= 0 && itemIdx < static_cast<int>(s.items.size())) {
+            s.items.erase(s.items.begin() + itemIdx);
+            s.lastRRIdx = -1;
+            if (s.items.empty()) {
+                s.name = "EMPTY";
+                s.hasCustomColor = false;
+                s.stageX = 0.0f;
+                s.stageY = 0.0f;
+            }
+        }
+    }
+
     void resetStagePositions() {
         std::lock_guard<std::mutex> lock(stateMutex_);
         for (int i = 0; i < kTotalSlots; ++i) {
@@ -205,7 +230,7 @@ public:
     void prepare(double sampleRate) {
         sr_ = static_cast<float>(std::max(8000.0, sampleRate));
         roomBus_.prepare(sr_, 8.0f, 0.75f, 120.0f, 9000.0f);
-        hallBus_.prepare(sr_, 24.0f, 3.20f, 140.0f, 6200.0f);
+        hallBus_.prepare(sr_, 24.0f, 3.20f, 120.0f, 8500.0f);
         subBus_.prepare(sr_);
         masterFx_.prepare(sr_);
         for (auto& v : voices_) v.active = false;
@@ -219,6 +244,26 @@ public:
 
     int activeVoiceCount() const { return activeVoices_.load(std::memory_order_relaxed); }
     float currentGrDb() const { return masterFx_.currentGrDb(); }
+    float currentOutLevel() const { return masterFx_.currentOutLevel(); }
+
+    // Returns playhead normalized position (0..1) if slotIdx is currently playing, else -1.0f
+    float getSlotPlayheadNorm(int slotIdx) {
+        std::unique_lock<std::mutex> lock(stateMutex_, std::try_to_lock);
+        if (!lock.owns_lock()) return -1.0f;
+        uint64_t latestAge = 0;
+        float posNorm = -1.0f;
+        for (const auto& v : voices_) {
+            if (v.active && v.slotIndex == slotIdx && v.primaryBuf && v.age >= latestAge) {
+                latestAge = v.age;
+                double totalF = static_cast<double>(v.primaryBuf->numFrames());
+                if (totalF > 1.0) {
+                    double actualFrame = v.reverse ? (totalF - 1.0 - v.playPos) : v.playPos;
+                    posNorm = std::clamp(static_cast<float>(actualFrame / totalF), 0.0f, 1.0f);
+                }
+            }
+        }
+        return posNorm;
+    }
 
     uint64_t totalSampleRamBytes() const {
         uint64_t bytes = 0;
@@ -458,25 +503,37 @@ public:
                     v.chokeFade -= v.chokeDec;
                     if (v.chokeFade <= 0.0f) { v.active = false; continue; }
                 }
-                if (!v.releasing) v.envVal = std::min(1.0f, v.envVal + v.attackInc);
-                else {
-                    v.envVal -= v.releaseDec;
-                    if (v.envVal <= 0.0f) { v.active = false; continue; }
-                }
 
+                // Region bounds
                 double regionLen = std::max(8.0, v.endFrame - v.startFrame);
                 double relPos = v.playPos - v.startFrame;
                 if (relPos < 0.0 || relPos >= regionLen) {
                     v.active = false;
                     continue;
                 }
+
+                // Smooth Attack & Release (works cleanly for both One-Shot and Gate modes!)
+                if (!v.releasing) {
+                    v.envVal = std::min(1.0f, v.envVal + v.attackInc);
+                    if (v.oneShot && relPos >= v.releaseStartFrame) {
+                        v.releasing = true;
+                    }
+                }
+                if (v.releasing) {
+                    v.envVal -= v.releaseDec;
+                    if (v.envVal <= 0.0001f) { v.active = false; continue; }
+                }
+
+                // Wave Editor Fade-In & Fade-Out envelope
                 float waveEnv = 1.0f;
                 if (v.fadeInFrames > 1.0 && relPos < v.fadeInFrames) {
-                    waveEnv *= static_cast<float>(relPos / v.fadeInFrames);
+                    float tIn = static_cast<float>(relPos / v.fadeInFrames);
+                    waveEnv *= tIn * tIn; // Smooth curve
                 }
                 double rem = regionLen - relPos;
                 if (v.fadeOutFrames > 1.0 && rem < v.fadeOutFrames) {
-                    waveEnv *= static_cast<float>(std::max(0.0, rem) / v.fadeOutFrames);
+                    float tOut = static_cast<float>(std::max(0.0, rem) / v.fadeOutFrames);
+                    waveEnv *= tOut * tOut;
                 }
 
                 float totalGain = v.envVal * waveEnv * v.chokeFade * v.velGain * v.slotGain;
@@ -634,35 +691,23 @@ private:
         }
         if (!target) return;
 
-        std::vector<int> candidates;
-        for (int i = 0; i < static_cast<int>(s.items.size()); ++i) {
-            if (vel >= s.items[static_cast<size_t>(i)].velMin - 0.01f &&
-                vel <= s.items[static_cast<size_t>(i)].velMax + 0.01f) {
-                candidates.push_back(i);
-            }
-        }
-        if (candidates.empty()) {
-            for (int i = 0; i < static_cast<int>(s.items.size()); ++i) candidates.push_back(i);
-        }
-
-        int chosenIdx = candidates[0];
-        if (candidates.size() == 2) {
-            chosenIdx = (candidates[0] == s.lastRRIdx) ? candidates[1] : candidates[0];
-        } else if (candidates.size() > 2) {
+        int numItems = static_cast<int>(s.items.size());
+        int chosenIdx = 0;
+        if (numItems == 2) {
+            chosenIdx = (s.lastRRIdx == 0) ? 1 : 0;
+        } else if (numItems > 2) {
             rngState_ = rngState_ * 1664525u + 1013904223u;
-            int pick = static_cast<int>((rngState_ >> 16) % static_cast<uint32_t>(candidates.size()));
-            chosenIdx = candidates[static_cast<size_t>(pick)];
-            if (chosenIdx == s.lastRRIdx) {
-                chosenIdx = candidates[(static_cast<size_t>(pick) + 1) % candidates.size()];
-            }
+            int pick = static_cast<int>((rngState_ >> 16) % static_cast<uint32_t>(numItems));
+            chosenIdx = (pick == s.lastRRIdx) ? ((pick + 1) % numItems) : pick;
         }
         s.lastRRIdx = chosenIdx;
         const auto& mm = s.items[static_cast<size_t>(chosenIdx)];
         auto prim = mm.primarySource();
         if (!prim) return;
 
-        float rrStrength  = params_.globalFakeRR  ? ((candidates.size() <= 2) ? 1.0f : 0.45f) : 0.0f;
-        float velStrength = params_.globalFakeVel ? 1.0f : 0.0f;
+        // Per-key Fake RR & Fake Vel + Global Fake Mic
+        float rrStrength  = s.fakeRR  ? ((numItems <= 2) ? 1.0f : 0.45f) : 0.0f;
+        float velStrength = s.fakeVel ? 1.0f : 0.0f;
         bool enableFakeMics = params_.globalFakeMic;
 
         Voice& v = *target;
@@ -670,6 +715,7 @@ private:
         v.releasing = false;
         v.choking = false;
         v.slotIndex = slotIdx;
+        v.itemIndex = chosenIdx;
         v.midiNote = midiNote;
         v.chokeGroup = s.chokeGroup;
         v.reverse = s.reverse;
@@ -682,9 +728,14 @@ private:
         v.age = ++voiceCounter_;
 
         double totalF = static_cast<double>(prim->numFrames());
-        v.startFrame = std::clamp(static_cast<double>(mm.startNorm), 0.0, 0.98) * totalF;
-        v.endFrame   = std::max(v.startFrame + 8.0, std::clamp(static_cast<double>(mm.endNorm), 0.02, 1.0) * totalF);
-        double regLen = v.endFrame - v.startFrame;
+        if (s.reverse) {
+            v.startFrame = (1.0 - std::clamp(static_cast<double>(mm.endNorm), 0.02, 1.0)) * totalF;
+            v.endFrame   = (1.0 - std::clamp(static_cast<double>(mm.startNorm), 0.0, 0.98)) * totalF;
+        } else {
+            v.startFrame = std::clamp(static_cast<double>(mm.startNorm), 0.0, 0.98) * totalF;
+            v.endFrame   = std::max(v.startFrame + 8.0, std::clamp(static_cast<double>(mm.endNorm), 0.02, 1.0) * totalF);
+        }
+        double regLen = std::max(8.0, v.endFrame - v.startFrame);
         v.fadeInFrames  = std::clamp(static_cast<double>(mm.fadeInNorm), 0.0, 0.5) * regLen;
         v.fadeOutFrames = std::clamp(static_cast<double>(mm.fadeOutNorm), 0.0, 0.5) * regLen;
 
@@ -726,11 +777,20 @@ private:
         }
 
         v.velGain = std::pow(vel, 1.35f);
+
+        // Accurate Attack & Release envelope (One-Shot uses Release as total decay tail from hit start)
         float extraAttackMs = (velStrength > 0.01f) ? ((1.0f - vel) * 8.5f * velStrength) : 0.0f;
-        float totalAttackMs = std::max(0.5f, s.attackMs + extraAttackMs);
-        v.attackInc = 1.0f / std::max(1.0f, sr_ * totalAttackMs * 0.001f);
-        v.releaseDec = 1.0f / std::max(1.0f, sr_ * std::max(15.0f, s.releaseMs) * 0.001f);
-        v.envVal = 0.0f;
+        float totalAttackMs = std::max(0.2f, s.attackMs + extraAttackMs);
+        double attSamples = sr_ * totalAttackMs * 0.001;
+        v.attackInc = (attSamples <= 1.0) ? 1.0f : static_cast<float>(1.0 / attSamples);
+
+        double relSamples = std::max(8.0, static_cast<double>(sr_) * std::max(10.0f, s.releaseMs) * 0.001);
+        v.releaseDec = static_cast<float>(1.0 / relSamples);
+        v.releaseStartFrame = std::max(attSamples * 0.5, relSamples * 0.25);
+        if (s.releaseMs >= 3800.0f) {
+            v.releaseStartFrame = regLen + 1000.0; // Full sample length when Release is maxed
+        }
+        v.envVal = (attSamples <= 1.0) ? 1.0f : 0.0f;
 
         v.useVelLpf = (velStrength > 0.05f && vel < 0.92f);
         if (v.useVelLpf) {

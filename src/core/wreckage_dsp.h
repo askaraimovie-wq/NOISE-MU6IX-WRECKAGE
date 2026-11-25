@@ -117,9 +117,9 @@ public:
         preBufR_.assign(static_cast<size_t>(maxPreSamples_), 0.0f);
         preIdx_ = 0;
 
-        static constexpr float baseMs[4] = { 23.7f, 31.3f, 41.9f, 53.1f };
+        static constexpr float baseMs[4] = { 29.3f, 37.1f, 47.9f, 61.3f };
         for (int i = 0; i < 4; ++i) {
-            int maxLen = std::max(64, static_cast<int>(sr_ * baseMs[i] * 2.4f * 0.001f));
+            int maxLen = std::max(64, static_cast<int>(sr_ * baseMs[i] * 2.6f * 0.001f));
             lines_[i].assign(static_cast<size_t>(maxLen), 0.0f);
             activeLen_[i] = std::max(32, static_cast<int>(sr_ * baseMs[i] * 1.1f * 0.001f));
             idx_[i] = 0;
@@ -131,17 +131,17 @@ public:
 
     void configure(float preDelayMs, float decaySeconds, float size01, float hpHz, float lpHz) {
         preDelaySamples_ = std::clamp(static_cast<int>(sr_ * preDelayMs * 0.001f), 1, maxPreSamples_ - 1);
-        static constexpr float baseMs[4] = { 23.7f, 31.3f, 41.9f, 53.1f };
-        float sizeScale = 0.45f + std::clamp(size01, 0.0f, 1.0f) * 1.65f;
-        float rt = std::max(0.15f, decaySeconds);
+        static constexpr float baseMs[4] = { 29.3f, 37.1f, 47.9f, 61.3f };
+        float sizeScale = 0.45f + std::clamp(size01, 0.0f, 1.0f) * 1.75f;
+        float rt = std::max(0.20f, decaySeconds);
         for (int i = 0; i < 4; ++i) {
             int maxL = static_cast<int>(lines_[i].size());
             int len = std::clamp(static_cast<int>(sr_ * baseMs[i] * sizeScale * 0.001f), 32, maxL);
             activeLen_[i] = len;
             if (idx_[i] >= len) idx_[i] = 0;
-            fb_[i] = std::clamp(std::pow(10.0f, (-3.0f * (static_cast<float>(len) / sr_)) / rt), 0.15f, 0.968f);
+            fb_[i] = std::clamp(std::pow(10.0f, (-3.0f * (static_cast<float>(len) / sr_)) / rt), 0.25f, 0.975f);
         }
-        dampCoeff_ = std::clamp(1.0f - (lpHz / (sr_ * 0.5f)), 0.12f, 0.88f);
+        dampCoeff_ = std::clamp(1.0f - (lpHz / (sr_ * 0.5f)), 0.10f, 0.85f);
         if (std::fabs(hpHz - lastHp_) > 1.0f) { hpL_.setHighPass(sr_, hpHz); hpR_.setHighPass(sr_, hpHz); lastHp_ = hpHz; }
         if (std::fabs(lpHz - lastLp_) > 5.0f) { lpL_.setLowPass(sr_, lpHz);  lpR_.setLowPass(sr_, lpHz);  lastLp_ = lpHz; }
     }
@@ -167,14 +167,14 @@ public:
         float h2 = 0.5f * (d[0] + d[1] - d[2] - d[3]);
         float h3 = 0.5f * (d[0] - d[1] - d[2] + d[3]);
 
-        float inVals[4] = { h0 + pdL * 0.65f, h1 + pdR * 0.65f, h2 + pdL * 0.45f, h3 - pdR * 0.45f };
+        float inVals[4] = { h0 + pdL * 0.85f, h1 + pdR * 0.85f, h2 + pdL * 0.65f, h3 - pdR * 0.65f };
         for (int i = 0; i < 4; ++i) {
             lines_[i][idx_[i]] = inVals[i];
             if (++idx_[i] >= activeLen_[i]) idx_[i] = 0;
         }
 
-        outL = lpL_.process(hpL_.process(0.85f * (d[0] + d[2])));
-        outR = lpR_.process(hpR_.process(0.85f * (d[1] + d[3])));
+        outL = lpL_.process(hpL_.process(1.15f * (d[0] + d[2])));
+        outR = lpR_.process(hpR_.process(1.15f * (d[1] + d[3])));
     }
 
 private:
@@ -236,8 +236,8 @@ public:
         bufR_[writeIdx_] = nextR;
         if (++writeIdx_ >= maxSamples_) writeIdx_ = 0;
 
-        inL_ = inL * (1.0f - mix01 * 0.4f) + dL * mix01;
-        inR_ = inR * (1.0f - mix01 * 0.4f) + dR * mix01;
+        inL_ = inL * (1.0f - mix01 * 0.35f) + dL * mix01;
+        inR_ = inR * (1.0f - mix01 * 0.35f) + dR * mix01;
     }
 
     float outL() const { return inL_; }
@@ -292,12 +292,12 @@ struct MasterFxParams {
     float compAttackMs = 10.0f;
     float compReleaseMs = 110.0f;
     float compKneeDb = 4.0f;
-    float compMakeupDb = 0.0f; // Default 0.0 dB
+    float compMakeupDb = 0.0f;
 
     bool  satOn = false;
     float satDrive = 0.25f;
     float satWarmth = 0.50f;
-    float satMix = 0.0f; // Default 0.0 (100% Dry / 0% Wet)
+    float satMix = 0.0f;
 
     bool  delayOn = false;
     int   delayMode = 0;
@@ -310,11 +310,11 @@ struct MasterFxParams {
     bool  revOn = false;
     int   revMode = 2;
     float revPreDelayMs = 18.0f;
-    float revDecaySec = 2.2f;
+    float revDecaySec = 2.4f;
     float revSize = 0.65f;
-    float revLowCutHz = 140.0f;
-    float revHighCutHz = 7500.0f;
-    float revMix = 0.24f;
+    float revLowCutHz = 120.0f;
+    float revHighCutHz = 8500.0f;
+    float revMix = 0.30f;
 
     bool  limiterOn = true;
     bool  monoBass = true;
@@ -331,13 +331,14 @@ public:
         dcL_.setSampleRate(sr_); dcR_.setSampleRate(sr_);
         monoBassL_.setLowPass(sr_, 120.0f); monoBassR_.setLowPass(sr_, 120.0f);
         delayBus_.prepare(sr_);
-        masterRevBus_.prepare(sr_, 18.0f, 2.2f, 140.0f, 7500.0f);
+        masterRevBus_.prepare(sr_, 18.0f, 2.4f, 120.0f, 8500.0f);
         limRel_ = std::exp(-1.0f / (sr_ * 0.045f));
         lastFiltHash_ = -1.0f;
         lastEqHash_ = -1.0f;
     }
 
     float currentGrDb() const { return lastGrDb_; }
+    float currentOutLevel() const { return outEnv_; }
 
     inline void process(float& l, float& r, const MasterFxParams& p) {
         if (p.filterOn) {
@@ -434,12 +435,12 @@ public:
         }
 
         if (p.revOn && p.revMix > 0.005f) {
-            float modeScale = (p.revMode == 0) ? 0.55f : ((p.revMode == 1) ? 0.85f : 1.25f);
+            float modeScale = (p.revMode == 0) ? 0.60f : ((p.revMode == 1) ? 0.95f : 1.35f);
             masterRevBus_.configure(p.revPreDelayMs, p.revDecaySec * modeScale, p.revSize, p.revLowCutHz, p.revHighCutHz);
             float rL = 0.0f, rR = 0.0f;
             masterRevBus_.process(l, r, rL, rR);
-            l = l * (1.0f - p.revMix * 0.35f) + rL * p.revMix;
-            r = r * (1.0f - p.revMix * 0.35f) + rR * p.revMix;
+            l = l * (1.0f - p.revMix * 0.25f) + rL * p.revMix * 1.45f;
+            r = r * (1.0f - p.revMix * 0.25f) + rR * p.revMix * 1.45f;
         }
 
         if (p.monoBass) {
@@ -473,12 +474,16 @@ public:
             l = std::clamp(l * limGain_, -ceil, ceil);
             r = std::clamp(r * limGain_, -ceil, ceil);
         }
+
+        float pkOut = std::max(std::fabs(l), std::fabs(r));
+        outEnv_ = (pkOut > outEnv_) ? pkOut : (outEnv_ * 0.9992f);
     }
 
 private:
     float sr_ = 44100.0f;
     float lastFiltHash_ = -1.0f, lastEqHash_ = -1.0f, lastWarmth_ = -99.0f;
     float lastGrDb_ = 0.0f;
+    float outEnv_ = 0.0f;
     Biquad flt1L_, flt1R_, flt2L_, flt2R_;
     Biquad eqLowL_, eqLowR_, eqMidL_, eqMidR_, eqHighL_, eqHighR_;
     Biquad satWarmL_, satWarmR_;

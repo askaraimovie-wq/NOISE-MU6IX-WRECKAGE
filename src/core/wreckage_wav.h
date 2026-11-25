@@ -106,7 +106,6 @@ public:
                 return std::clamp(f, -4.0f, 4.0f);
             }
             if (audioFormat == 6 && bitsPerSample == 8) {
-                // A-law
                 uint8_t a = p[0] ^ 0x55;
                 int t = (a & 0x0F) << 4;
                 int seg = (a & 0x70) >> 4;
@@ -116,7 +115,6 @@ public:
                 return static_cast<float>(s) / 32768.0f;
             }
             if (audioFormat == 7 && bitsPerSample == 8) {
-                // mu-law
                 uint8_t u = ~p[0];
                 int t = ((u & 0x0F) << 3) + 0x84;
                 t <<= ((u & 0x70) >> 4);
