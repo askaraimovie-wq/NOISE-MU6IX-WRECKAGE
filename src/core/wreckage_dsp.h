@@ -85,7 +85,6 @@ struct Biquad {
     }
 };
 
-// Lightweight 4-Line Hadamard FDN Stereo Reverb with Pre-Delay (Shared Room & Hall)
 class StereoSpaceBus {
 public:
     void prepare(float sampleRate, float preDelayMs, float decaySeconds, float hpHz, float lpHz) {
@@ -113,7 +112,6 @@ public:
     }
 
     inline void process(float inL, float inR, float& outL, float& outR) {
-        // Pre-delay to protect Close Mic phase coherence
         float pdL = preBufL_[preIdx_];
         float pdR = preBufR_[preIdx_];
         preBufL_[preIdx_] = inL;
@@ -123,12 +121,10 @@ public:
         float d[4];
         for (int i = 0; i < 4; ++i) {
             float s = lines_[i][idx_[i]];
-            // One-pole air damping
             dampState_[i] = s * (1.0f - dampCoeff_) + dampState_[i] * dampCoeff_;
             d[i] = dampState_[i] * fb_[i];
         }
 
-        // Orthogonal 4x4 Hadamard matrix mixing
         float h0 = 0.5f * (d[0] + d[1] + d[2] + d[3]);
         float h1 = 0.5f * (d[0] - d[1] + d[2] - d[3]);
         float h2 = 0.5f * (d[0] + d[1] - d[2] - d[3]);
@@ -157,7 +153,6 @@ private:
     Biquad hpL_, hpR_, lpL_, lpR_;
 };
 
-// Shared Mono LFE Sub-Bass Impact Generator (< 100 Hz Pure Mono)
 class LfeSubBus {
 public:
     void prepare(float sr) {
@@ -171,18 +166,16 @@ public:
         float mono = 0.5f * (inL + inR);
         float sub = lp2_.process(lp1_.process(mono));
         float boosted = subPeak_.process(sub);
-        // Subtle sub-harmonic punch + protection clip
         float shaped = fastTanh(boosted * 1.45f) * 0.92f;
         shaped = dc_.process(shaped);
         outL = shaped;
-        outR = shaped; // Locked Mono below 100 Hz
+        outR = shaped;
     }
 private:
     Biquad lp1_, lp2_, subPeak_;
     DCBlocker dc_;
 };
 
-// Shared CRUSH Parallel Smash Bus (Fast FET + Mid-Grit WaveShaper + DC-Blocker)
 class CrushBus {
 public:
     void prepare(float sr) {
@@ -212,7 +205,6 @@ private:
     float att_ = 0.9f, rel_ = 0.999f, env_ = 0.0f;
 };
 
-// Master FX + 3-Mode PUNISH + Transient Punch + Stereo Width + -0.3 dB Limiter
 class MasterFxRack {
 public:
     void prepare(float sr) {
@@ -250,11 +242,9 @@ public:
     inline void process(float& l, float& r,
                         float compAmt, float transientPunch, float stereoWidth, bool monoBass,
                         float punishAmt, PunishMode punishMode, bool limiterOn, float outGain) {
-        // 1. Filter + 3-Band EQ
         l = eqHighL_.process(eqMidL_.process(eqLowL_.process(lpfL_.process(hpfL_.process(l)))));
         r = eqHighR_.process(eqMidR_.process(eqLowR_.process(lpfR_.process(hpfR_.process(r)))));
 
-        // 2. Transient Punch Shaper (0.5 = neutral, >0.5 = punchier, <0.5 = softer)
         float punchDelta = (transientPunch - 0.5f) * 2.0f;
         if (std::fabs(punchDelta) > 0.01f) {
             float det = std::max(std::fabs(l), std::fabs(r));
@@ -267,7 +257,6 @@ public:
             l *= gain; r *= gain;
         }
 
-        // 3. Bus Compressor
         if (compAmt > 0.01f) {
             float det = std::max(std::fabs(l), std::fabs(r));
             compEnv_ = (det > compEnv_) ? (compAtt_ * compEnv_ + (1.0f - compAtt_) * det)
@@ -282,9 +271,7 @@ public:
             l *= gr * makeup; r *= gr * makeup;
         }
 
-        // 4. Stereo Width + Mono Bass (< 120 Hz)
-        float w = stereoWidth * 1.5f; // 0..1.5 (0.5 -> 0.75.. wait: map 0.5 -> 1.0)
-        w = (stereoWidth <= 0.5f) ? (stereoWidth * 2.0f) : (1.0f + (stereoWidth - 0.5f));
+        float w = (stereoWidth <= 0.5f) ? (stereoWidth * 2.0f) : (1.0f + (stereoWidth - 0.5f));
         if (monoBass) {
             float lowL = monoBassL_.process(l), lowR = monoBassR_.process(r);
             float lowMono = 0.5f * (lowL + lowR);
@@ -297,7 +284,6 @@ public:
             l = mid + side; r = mid - side;
         }
 
-        // 5. Signature 3-Mode PUNISH + 20 Hz DC Blocker
         if (punishAmt > 0.005f) {
             float drive = 1.0f;
             float asym = 0.0f;
@@ -308,7 +294,7 @@ public:
             } else if (punishMode == PunishMode::HurtMePlenty) {
                 drive = 1.0f + punishAmt * 5.5f;
                 asym = 0.07f;
-            } else { // Nightmare
+            } else {
                 drive = 1.0f + punishAmt * 11.5f;
                 asym = 0.14f;
             }
@@ -319,10 +305,9 @@ public:
             r = r * (1.0f - wetMix * 0.85f) + satR * (wetMix * 1.15f * compNorm + 0.15f);
         }
 
-        // 6. Master Gain + -0.3 dB Safety Output Limiter
         l *= outGain; r *= outGain;
         if (limiterOn) {
-            constexpr float ceil = 0.966f; // -0.3 dB
+            constexpr float ceil = 0.966f;
             float pk = std::max(std::fabs(l), std::fabs(r));
             float target = (pk > ceil) ? (ceil / pk) : 1.0f;
             limGain_ = (target < limGain_) ? target : (limRel_ * limGain_ + (1.0f - limRel_) * target);

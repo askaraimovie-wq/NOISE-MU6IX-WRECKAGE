@@ -16,7 +16,6 @@
 
 namespace NoiseMu6ix {
 
-// A single multi-mic sample group (Close, Room, Hall, LFE, Crush) for one (Velocity, RR) entry
 struct MultiMicSample {
     std::array<std::shared_ptr<AudioBuffer>, 5> mics;
     bool hasMic(MicBus m) const {
@@ -28,42 +27,45 @@ struct MultiMicSample {
         for (int i = 0; i < 5; ++i) if (mics[i] && !mics[i]->empty()) ++c;
         return c;
     }
+    std::shared_ptr<AudioBuffer> primarySource() const {
+        if (hasMic(MicBus::Close)) return mics[0];
+        for (int i = 1; i < 5; ++i) {
+            if (mics[static_cast<size_t>(i)] && !mics[static_cast<size_t>(i)]->empty()) {
+                return mics[static_cast<size_t>(i)];
+            }
+        }
+        return nullptr;
+    }
 };
 
-// Dynamic Unlimited Velocity Layer containing unlimited Round-Robins
 struct VelocityLayer {
     std::vector<MultiMicSample> roundRobins;
 };
 
 struct SlotConfig {
     std::string name = "EMPTY";
-    int midiNote = kBaseMidiNote;   // Remappable + supports Pad Layering
-    uint32_t keyColor = 0;          // 0 = uncolored, otherwise 0xRRGGBB
+    int midiNote = kBaseMidiNote;
+    uint32_t keyColor = 0;
     bool hasCustomColor = false;
 
-    // Sample Inspector Horizontal Faders
-    float gain = 0.85f;             // 0..1.5
-    float pitchSemitones = 0.0f;    // -24..+24
-    float attackMs = 0.0f;          // 0..200 ms
-    float releaseMs = 600.0f;       // 20..4000 ms
-    float xfade = 0.0f;             // 0..1
+    float gain = 0.85f;
+    float pitchSemitones = 0.0f;
+    float attackMs = 0.0f;
+    float releaseMs = 600.0f;
+    float xfade = 0.0f;
 
-    // Drum Modes
-    bool oneShot = true;            // true = One-Shot, false = Gate
-    int chokeGroup = 0;             // 0 = Off, 1..4
-    bool reverse = false;           // Zero-CPU Reverse playback
+    bool oneShot = true;
+    int chokeGroup = 0;
+    bool reverse = false;
     bool purged = false;
 
-    // THE STAGE Spatial Position
-    float stageX = 0.0f;            // -1.0 (Left) .. +1.0 (Right)
-    float stageY = 0.25f;           // 0.0 (Front/Dry) .. 1.0 (Back/Far Hall)
+    float stageX = 0.0f;
+    float stageY = 0.25f;
 
-    // 3-State Smart Hybrid Engine (AUTO / ON / OFF)
     SmartMode rrMode  = SmartMode::Auto;
     SmartMode velMode = SmartMode::Auto;
     SmartMode micMode = SmartMode::Auto;
 
-    // Unlimited Dynamic Velocity Layers x Unlimited Round-Robins
     std::vector<VelocityLayer> layers;
     int lastRRIdx = -1;
     int fakeRRStep = 0;
@@ -94,6 +96,7 @@ struct Voice {
     bool oneShot = true;
 
     MultiMicSample sample;
+    std::shared_ptr<AudioBuffer> primaryBuf;
     double playPos = 0.0;
     double pitchRatio = 1.0;
     float velGain = 1.0f;
@@ -101,14 +104,12 @@ struct Voice {
     float panL = 0.707f, panR = 0.707f;
     float stageDepth = 0.25f;
 
-    // Envelope & Anti-Click Fade
     float envVal = 0.0f;
     float attackInc = 1.0f;
     float releaseDec = 0.001f;
     float chokeFade = 1.0f;
     float chokeDec = 0.004f;
 
-    // Smart Hybrid Per-Voice DSP (Fake RR Formant EQ + Fake Vel LPF + Skin-Tension Pitch Drop)
     Biquad formantL, formantR;
     Biquad velLpfL, velLpfR;
     Biquad stageLpfL, stageLpfR;
@@ -118,12 +119,10 @@ struct Voice {
     float pitchDropCents = 0.0f;
     float pitchDropDecay = 0.997f;
 
-    // Smart Hybrid Mic Flags (true = synthesize this mic from Close)
     bool synthRoom = false;
     bool synthHall = false;
     bool synthLfe  = false;
     bool synthCrush = false;
-    bool hasRealClose = false;
     bool hasRealRoom  = false;
     bool hasRealHall  = false;
     bool hasRealLfe   = false;
@@ -155,10 +154,9 @@ struct EngineParams {
     float stageMasterDepth = 1.0f;
     float smartIntensity = 0.80f;
     int   themeIndex = 0;
-    int   zoomIndex = 2; // 0=50%, 1=75%, 2=100%
+    int   zoomIndex = 2;
 };
 
-// Audio output block pointers (Main + 5 optional Aux Multi-Outs)
 struct ProcessBuffers {
     float* mainL = nullptr;
     float* mainR = nullptr;
@@ -175,7 +173,6 @@ public:
         for (int i = 0; i < kTotalSlots; ++i) {
             slots_[i].midiNote = kBaseMidiNote + i;
             slots_[i].name = "SLOT " + std::to_string(i + 1);
-            // Arrange default stage positions across a semi-circle
             float angle = -0.75f + 1.5f * (static_cast<float>(i % 12) / 11.0f);
             slots_[i].stageX = std::clamp(angle, -0.85f, 0.85f);
             slots_[i].stageY = 0.18f + 0.25f * static_cast<float>(i / 12);
@@ -199,7 +196,6 @@ public:
     SlotConfig& slot(int idx) { return slots_[std::clamp(idx, 0, kTotalSlots - 1)]; }
     const SlotConfig& slot(int idx) const { return slots_[std::clamp(idx, 0, kTotalSlots - 1)]; }
 
-    // Safe multi-file / single-file loader with Regex Auto-Parse
     bool loadSampleIntoSlot(int slotIdx, const std::filesystem::path& filePath,
                             int explicitVel = -1, int explicitRR = -1, int explicitMic = -1) {
         auto buf = std::make_shared<AudioBuffer>();
@@ -229,12 +225,10 @@ public:
         velocity01 = std::clamp(velocity01, 0.01f, 1.0f);
         float shapedVel = applyVelocityCurve(velocity01);
 
-        // Support Pad Layering: trigger ALL slots mapped to this MIDI note!
         for (int sIdx = 0; sIdx < kTotalSlots; ++sIdx) {
             auto& s = slots_[sIdx];
             if (s.midiNote != midiNote || s.purged || !s.hasAnySample()) continue;
 
-            // Choke Group handling (5ms anti-click fade)
             if (s.chokeGroup > 0) {
                 for (auto& v : voices_) {
                     if (v.active && v.chokeGroup == s.chokeGroup) {
@@ -259,19 +253,6 @@ public:
         }
     }
 
-    float getKeyFlash(int midiNote) const {
-        if (midiNote < 0 || midiNote >= 128) return 0.0f;
-        return activeKeyFlash_[midiNote].load(std::memory_order_relaxed);
-    }
-
-    void decayKeyFlashes() {
-        for (int i = 0; i < 128; ++i) {
-            float v = activeKeyFlash_[i].load(std::memory_order_relaxed);
-            if (v > 0.001f) activeKeyFlash_[i].store(v * 0.84f, std::memory_order_relaxed);
-        }
-    }
-
-    // Export current loaded kit to a deduplicated libFLAC .nm6 pack
     bool exportKitToNm6(const std::filesystem::path& targetPath, const std::string& libName) {
         std::lock_guard<std::mutex> lock(stateMutex_);
         Nm6Pack pack;
@@ -311,7 +292,6 @@ public:
         return pack.saveAtomic(targetPath);
     }
 
-    // Main real-time & offline audio processing callback
     void process(ProcessBuffers& pb) {
         if (!pb.mainL || !pb.mainR || pb.numSamples <= 0) return;
 
@@ -340,9 +320,8 @@ public:
             float sumCrushRealL= 0.0f, sumCrushRealR= 0.0f, sendCrushL= 0.0f, sendCrushR= 0.0f;
 
             for (auto& v : voices_) {
-                if (!v.active) continue;
+                if (!v.active || !v.primaryBuf) continue;
 
-                // Envelope & Choke
                 if (v.choking) {
                     v.chokeFade -= v.chokeDec;
                     if (v.chokeFade <= 0.0f) { v.active = false; continue; }
@@ -356,17 +335,12 @@ public:
 
                 float totalGain = v.envVal * v.chokeFade * v.velGain * v.slotGain;
 
-                // Read Close (or primary fallback) with Cubic Hermite Resampler
                 float cL = 0.0f, cR = 0.0f;
-                bool done = false;
-                if (v.hasRealClose) {
-                    done = !readHermite(*v.sample.mics[0], v.playPos, v.reverse, cL, cR);
-                } else {
-                    done = true;
+                if (!readHermite(*v.primaryBuf, v.playPos, v.reverse, cL, cR)) {
+                    v.active = false;
+                    continue;
                 }
-                if (done) { v.active = false; continue; }
 
-                // Apply Smart Fake RR Formant EQ & Smart Fake Velocity Tone + Drive
                 if (v.useFormant) {
                     cL = v.formantL.process(cL);
                     cR = v.formantR.process(cR);
@@ -381,7 +355,6 @@ public:
                     cR = fastTanh(cR * d) / d * 1.15f;
                 }
 
-                // Stage Distance HF Roll-Off + Panning
                 float depth = std::clamp(v.stageDepth * params_.stageMasterDepth, 0.0f, 1.0f);
                 float stagedL = v.stageLpfL.process(cL) * totalGain * v.panL;
                 float stagedR = v.stageLpfR.process(cR) * totalGain * v.panR;
@@ -390,7 +363,6 @@ public:
                 sumCloseL += stagedL * closeDryScale;
                 sumCloseR += stagedR * closeDryScale;
 
-                // Hybrid Mic Routing (Real Mics stay untouched; Missing Mics go to Shared Synth Bus)
                 float roomDepthSend = 0.45f + depth * 0.85f;
                 float hallDepthSend = 0.25f + depth * 1.15f;
 
@@ -432,7 +404,6 @@ public:
                     sendCrushL += stagedL; sendCrushR += stagedR;
                 }
 
-                // Advance playhead (with Skin-Tension Pitch Drop on hard hits)
                 double curStep = v.pitchRatio;
                 if (v.pitchDropCents > 0.05f) {
                     curStep *= std::pow(2.0, static_cast<double>(v.pitchDropCents) / 1200.0);
@@ -441,7 +412,6 @@ public:
                 v.playPos += curStep;
             }
 
-            // Shared Zero-CPU Bus DSP Processing
             float busL[5] = { 0, 0, 0, 0, 0 };
             float busR[5] = { 0, 0, 0, 0, 0 };
 
@@ -474,7 +444,6 @@ public:
                 busR[4] = (sumCrushRealR + sR) * params_.busGain[4];
             }
 
-            // Multi-Out Auto-Routing (Active Aux Buses decouple from Main to avoid +6 dB doubling)
             float mainL = 0.0f, mainR = 0.0f;
             for (int b = 0; b < 5; ++b) {
                 if (pb.auxActive[b] && pb.auxL[b] && pb.auxR[b]) {
@@ -486,7 +455,6 @@ public:
                 }
             }
 
-            // Master FX + 3-Mode PUNISH + Limiter on Main Out
             masterFx_.process(mainL, mainR,
                               params_.compAmount, params_.transientPunch, params_.stereoWidth,
                               params_.monoBass, params_.punishAmount, params_.punishMode,
@@ -531,7 +499,6 @@ private:
 
     void spawnVoice(int slotIdx, int midiNote, float vel) {
         auto& s = slots_[slotIdx];
-        // Pick free voice or steal oldest
         Voice* target = nullptr;
         uint64_t oldestAge = UINT64_MAX;
         for (auto& v : voices_) {
@@ -540,14 +507,12 @@ private:
         }
         if (!target) return;
 
-        // 1. Velocity Layer Selection (Unlimited dynamic split)
         int numVels = static_cast<int>(s.layers.size());
         if (numVels == 0) return;
         int velLayerIdx = std::clamp(static_cast<int>(vel * numVels), 0, numVels - 1);
         auto& vl = s.layers[static_cast<size_t>(velLayerIdx)];
         if (vl.roundRobins.empty()) return;
 
-        // 2. Anti-Predictable Non-Repeating Round-Robin Selection
         int numRRs = static_cast<int>(vl.roundRobins.size());
         int rrIdx = 0;
         if (numRRs == 1) {
@@ -561,14 +526,14 @@ private:
         }
         s.lastRRIdx = rrIdx;
         const auto& mm = vl.roundRobins[static_cast<size_t>(rrIdx)];
-        if (!mm.hasMic(MicBus::Close)) return;
+        auto prim = mm.primarySource();
+        if (!prim) return;
 
-        // 3. Smart Hybrid Boost Strength Computation (1-hit=1.0, 2-4=0.50 Hybrid, 5+=0.0 Pure Real)
         float rrStrength = 0.0f;
         if (s.rrMode == SmartMode::ForceOn) rrStrength = 1.0f;
         else if (s.rrMode == SmartMode::Auto) {
             if (numRRs == 1) rrStrength = 1.0f;
-            else if (numRRs <= 4) rrStrength = 0.50f; // HYBRID BOOST eliminates 2-4 RR machine-gun
+            else if (numRRs <= 4) rrStrength = 0.50f;
             else rrStrength = 0.0f;
         }
         rrStrength *= params_.smartIntensity;
@@ -577,7 +542,7 @@ private:
         if (s.velMode == SmartMode::ForceOn) velStrength = 1.0f;
         else if (s.velMode == SmartMode::Auto) {
             if (numVels == 1) velStrength = 1.0f;
-            else if (numVels <= 4) velStrength = 0.45f; // Hybrid dynamic smoothing
+            else if (numVels <= 4) velStrength = 0.45f;
             else velStrength = 0.0f;
         }
         velStrength *= params_.smartIntensity;
@@ -594,22 +559,20 @@ private:
         v.reverse = s.reverse;
         v.oneShot = s.oneShot;
         v.sample = mm;
+        v.primaryBuf = prim;
         v.slotGain = s.gain;
         v.stageDepth = s.stageY;
         v.chokeFade = 1.0f;
         v.age = ++voiceCounter_;
 
-        // Constant-Power Stereo Panning from Stage X
         float pan01 = (s.stageX + 1.0f) * 0.5f;
         v.panL = std::cos(pan01 * kPi * 0.5f);
         v.panR = std::sin(pan01 * kPi * 0.5f);
 
-        // Stage Distance HF Air Roll-Off
         float depthCutoff = 19500.0f - std::clamp(s.stageY * params_.stageMasterDepth, 0.0f, 1.0f) * 12500.0f;
         v.stageLpfL.setLowPass(sr_, depthCutoff); v.stageLpfR.setLowPass(sr_, depthCutoff);
         v.stageLpfL.reset(); v.stageLpfR.reset();
 
-        // Pro Fake RR (4-Step Shuffle: Start Shift + Formant EQ + Pitch-Safe Drift)
         static constexpr float kStartMs[4]    = { 0.0f, 1.2f, 2.4f, 0.6f };
         static constexpr float kFormantHz[4]  = { 340.0f, 520.0f, 680.0f, 440.0f };
         static constexpr float kFormantDb[4]  = { 1.4f, -1.3f, 1.1f, -0.9f };
@@ -617,10 +580,10 @@ private:
         int step = s.fakeRRStep;
         s.fakeRRStep = (s.fakeRRStep + 1) & 3;
 
-        double sampleRateRatio = static_cast<double>(mm.mics[0]->sampleRate) / static_cast<double>(sr_);
+        double sampleRateRatio = static_cast<double>(prim->sampleRate) / static_cast<double>(sr_);
         double centsOffset = (rrStrength > 0.01f) ? (kPitchCents[step] * rrStrength) : 0.0;
         v.pitchRatio = sampleRateRatio * std::pow(2.0, (static_cast<double>(s.pitchSemitones) + centsOffset / 100.0) / 12.0);
-        v.playPos = (rrStrength > 0.01f && !s.reverse) ? (kStartMs[step] * rrStrength * 0.001 * mm.mics[0]->sampleRate) : 0.0;
+        v.playPos = (rrStrength > 0.01f && !s.reverse) ? (kStartMs[step] * rrStrength * 0.001 * prim->sampleRate) : 0.0;
 
         v.useFormant = (rrStrength > 0.05f);
         if (v.useFormant) {
@@ -629,7 +592,6 @@ private:
             v.formantL.reset(); v.formantR.reset();
         }
 
-        // Pro Fake Velocity (Log Volume + Warm LPF + Soft Attack + Skin-Tension Pitch Drop + Drive)
         v.velGain = std::pow(vel, 1.35f);
         float extraAttackMs = (velStrength > 0.01f) ? ((1.0f - vel) * 8.5f * velStrength) : 0.0f;
         float totalAttackMs = std::max(0.5f, s.attackMs + extraAttackMs);
@@ -648,8 +610,6 @@ private:
         v.pitchDropCents = (vel > 0.75f) ? (24.0f * (vel - 0.75f) * 4.0f * velStrength) : 0.0f;
         v.pitchDropDecay = std::exp(-1.0f / (sr_ * 0.025f));
 
-        // Smart Hybrid Mic Flags (Preserve Real Mics, Synthesize ONLY Missing Mics)
-        v.hasRealClose = mm.hasMic(MicBus::Close);
         v.hasRealRoom  = mm.hasMic(MicBus::Room);
         v.hasRealHall  = mm.hasMic(MicBus::Hall);
         v.hasRealLfe   = mm.hasMic(MicBus::LFE);
@@ -661,7 +621,6 @@ private:
         v.synthCrush = enableFakeMics && !v.hasRealCrush;
     }
 
-    // Built-in 1-Click Test Percussion Kit so the plugin sounds cinematic out of the box!
     void installBuiltInTestKit() {
         auto makeDrum = [](float baseHz, float pitchDrop, float decaySec, float noiseAmt) {
             auto b = std::make_shared<AudioBuffer>();

@@ -5,7 +5,6 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
-#include <map>
 #include <string>
 #include <vector>
 
@@ -33,7 +32,7 @@ struct Nm6Pack {
     uint32_t formatVersion = 1;
     std::string libraryName = "Noise Mu6ix Library";
     std::string author = "Noise Mu6ix Studio";
-    std::string kitMetadataJson; // Preset, 36 slots, Stage X/Y, Key Colors, Smart Modes
+    std::string kitMetadataJson;
     std::vector<Nm6SampleEntry> samples;
 
     static uint64_t fnv1aHash(const AudioBuffer& buf) {
@@ -51,7 +50,6 @@ struct Nm6Pack {
         return h;
     }
 
-    // Deduplicated sample insertion: returns Sample ID
     uint32_t addOrFindSample(const AudioBuffer& buf) {
         uint64_t h = fnv1aHash(buf);
         for (size_t i = 0; i < samples.size(); ++i) {
@@ -70,11 +68,9 @@ struct Nm6Pack {
 
     bool decodeSample(uint32_t sampleId, AudioBuffer& out) const {
         if (sampleId >= samples.size()) return false;
-        const auto& e = samples[sampleId];
-        return decodeAudio(e, out);
+        return decodeAudio(samples[sampleId], out);
     }
 
-    // Atomic Safe Save (.nm6.tmp -> verify -> rename to .nm6)
     bool saveAtomic(const std::filesystem::path& targetPath) const {
         std::filesystem::path tmpPath = targetPath;
         tmpPath += ".tmp";
@@ -194,7 +190,6 @@ private:
             }
         }
 #endif
-        // Fallback Raw 24-bit PCM packing (used in non-FLAC test environments)
         entry.codec = Nm6Codec::RawPCM24;
         const size_t n = buf.numFrames();
         entry.encodedBytes.resize(n * 6);

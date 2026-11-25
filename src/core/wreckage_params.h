@@ -19,34 +19,34 @@ enum ParamIDs : uint32_t {
     kParamBusCrushBypass = 114,
 
     // Master FX Rack
-    kParamMasterHPF      = 200, // 20 Hz .. 400 Hz
-    kParamMasterLPF      = 201, // 2 kHz .. 20 kHz
-    kParamEqLow          = 202, // -12 .. +12 dB
-    kParamEqMid          = 203, // -12 .. +12 dB
-    kParamEqHigh         = 204, // -12 .. +12 dB
-    kParamCompAmount     = 205, // 0 .. 1
-    kParamTransientPunch = 206, // 0 .. 1 (0.5 neutral)
-    kParamStereoWidth    = 207, // 0 .. 1 (0.5 = 100%, 0 = Mono, 1 = 150% Wide)
-    kParamMonoBass       = 208, // 0 = Off, 1 = On (< 120 Hz Mono)
-    kParamVelCurve       = 209, // 0 = Soft, 0.5 = Linear, 1.0 = Hard
-    kParamLimiterOn      = 210, // 0 = Off, 1 = On (-0.3 dB)
-    kParamMasterOutGain  = 211, // 0 .. 1
+    kParamMasterHPF      = 200,
+    kParamMasterLPF      = 201,
+    kParamEqLow          = 202,
+    kParamEqMid          = 203,
+    kParamEqHigh         = 204,
+    kParamCompAmount     = 205,
+    kParamTransientPunch = 206,
+    kParamStereoWidth    = 207,
+    kParamMonoBass       = 208,
+    kParamVelCurve       = 209,
+    kParamLimiterOn      = 210,
+    kParamMasterOutGain  = 211,
 
     // Signature PUNISH Bar
-    kParamPunishAmount   = 300, // 0 .. 1
-    kParamPunishMode     = 301, // 0 = Gently Now, 0.5 = Hurt Me Plenty, 1.0 = Nightmare
+    kParamPunishAmount   = 300,
+    kParamPunishMode     = 301,
 
-    // UI Preferences (saved in state)
-    kParamThemeIndex     = 400, // 0..9 normalized
-    kParamUiZoom         = 401, // 0 = 50%, 0.5 = 75%, 1.0 = 100%
+    // UI Preferences
+    kParamThemeIndex     = 400,
+    kParamUiZoom         = 401,
 
-    // Selected Slot Quick Controls (automatable for live tweaking)
-    kParamStageMasterDepth = 500, // Global stage depth multiplier
-    kParamSmartIntensity   = 501  // Global Smart Hybrid Fake intensity
+    // Global Quick Controls
+    kParamStageMasterDepth = 500,
+    kParamSmartIntensity   = 501
 };
 
 enum class SmartMode : uint8_t {
-    Auto = 0, // 1-hit = Full Fake, 2-4 = Hybrid Boost, 5+ = Pure Real
+    Auto = 0,
     ForceOn = 1,
     ForceOff = 2
 };

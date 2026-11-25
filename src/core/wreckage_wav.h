@@ -1,11 +1,11 @@
 #pragma once
+#include <algorithm>
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <string>
 #include <vector>
-#include <algorithm>
 
 namespace NoiseMu6ix {
 
@@ -45,10 +45,8 @@ public:
                 numChannels   = readU16(data + pos + 2);
                 sampleRate    = readU32(data + pos + 4);
                 bitsPerSample = readU16(data + pos + 14);
-                // Handle WAVE_FORMAT_EXTENSIBLE (0xFFFE)
                 if (audioFormat == 0xFFFE && chunkSize >= 40) {
-                    uint16_t subFormat = readU16(data + pos + 24);
-                    audioFormat = subFormat;
+                    audioFormat = readU16(data + pos + 24);
                 }
             } else if (std::memcmp(chunkId, "data", 4) == 0) {
                 pcmData = data + pos;
@@ -98,7 +96,7 @@ public:
         for (size_t i = 0; i < numFrames; ++i) {
             const uint8_t* framePtr = pcmData + i * frameStride;
             float l = decodeSample(framePtr);
-            float r = (numChannels >= 2) ? decodeSample(framePtr + bytesPerSample) : l; // Mono -> Center Stereo
+            float r = (numChannels >= 2) ? decodeSample(framePtr + bytesPerSample) : l;
             out.left[i] = l;
             out.right[i] = r;
         }
@@ -116,33 +114,6 @@ public:
         return loadFromMemory(buf.data(), buf.size(), out);
     }
 
-    static bool writeWav16(const std::filesystem::path& path, const AudioBuffer& in) {
-        std::ofstream f(path, std::ios::binary);
-        if (!f.is_open()) return false;
-        uint32_t frames = static_cast<uint32_t>(in.numFrames());
-        uint32_t dataSize = frames * 4;
-        uint32_t riffSize = 36 + dataSize;
-        f.write("RIFF", 4);
-        writeU32(f, riffSize);
-        f.write("WAVEfmt ", 8);
-        writeU32(f, 16);
-        writeU16(f, 1);
-        writeU16(f, 2);
-        writeU32(f, in.sampleRate);
-        writeU32(f, in.sampleRate * 4);
-        writeU16(f, 4);
-        writeU16(f, 16);
-        f.write("data", 4);
-        writeU32(f, dataSize);
-        for (uint32_t i = 0; i < frames; ++i) {
-            int16_t l = static_cast<int16_t>(std::clamp(in.left[i], -1.0f, 1.0f) * 32767.0f);
-            int16_t r = static_cast<int16_t>(std::clamp(in.right[i], -1.0f, 1.0f) * 32767.0f);
-            writeU16(f, static_cast<uint16_t>(l));
-            writeU16(f, static_cast<uint16_t>(r));
-        }
-        return f.good();
-    }
-
 private:
     static uint16_t readU16(const uint8_t* p) {
         return static_cast<uint16_t>(p[0] | (p[1] << 8));
@@ -150,17 +121,6 @@ private:
     static uint32_t readU32(const uint8_t* p) {
         return static_cast<uint32_t>(p[0]) | (static_cast<uint32_t>(p[1]) << 8) |
                (static_cast<uint32_t>(p[2]) << 16) | (static_cast<uint32_t>(p[3]) << 24);
-    }
-    static void writeU16(std::ofstream& f, uint16_t v) {
-        uint8_t b[2] = { static_cast<uint8_t>(v & 0xFF), static_cast<uint8_t>((v >> 8) & 0xFF) };
-        f.write(reinterpret_cast<const char*>(b), 2);
-    }
-    static void writeU32(std::ofstream& f, uint32_t v) {
-        uint8_t b[4] = {
-            static_cast<uint8_t>(v & 0xFF), static_cast<uint8_t>((v >> 8) & 0xFF),
-            static_cast<uint8_t>((v >> 16) & 0xFF), static_cast<uint8_t>((v >> 24) & 0xFF)
-        };
-        f.write(reinterpret_cast<const char*>(b), 4);
     }
 };
 

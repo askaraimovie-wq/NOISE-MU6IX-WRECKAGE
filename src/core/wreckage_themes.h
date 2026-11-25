@@ -5,7 +5,7 @@ namespace NoiseMu6ix {
 
 struct ThemePalette {
     const char* name;
-    uint32_t bg;         // 0xRRGGBB
+    uint32_t bg;
     uint32_t panelBg;
     uint32_t headerBg;
     uint32_t border;
