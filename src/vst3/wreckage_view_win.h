@@ -27,7 +27,7 @@ public:
 
 private:
     static LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
-    LRESULT handleMessage(UINT msg, WPARAM wParam, LPARAM lParam);
+    LRESULT handleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
 
     void createDeviceResources();
     void discardDeviceResources();
@@ -77,7 +77,7 @@ private:
     std::vector<std::wstring> browserItems_;
     int selectedCategory_ = 0;
 
-    float uiScale_ = 1.0f;
+    float uiScale_ = 0.75f;
 };
 
 } // namespace NoiseMu6ix

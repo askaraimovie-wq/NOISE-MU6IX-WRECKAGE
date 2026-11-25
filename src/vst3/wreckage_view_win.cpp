@@ -14,7 +14,18 @@ using Steinberg::Vst::ParamID;
 
 namespace NoiseMu6ix {
 
-static const wchar_t* kWndClassName = L"NoiseMu6ixWreckageD2DViewClass";
+static const wchar_t* kWndClassName = L"NoiseMu6ixWreckageD2DViewClass_v1";
+
+static HINSTANCE getPluginModuleHandle() {
+    HINSTANCE hInst = nullptr;
+    if (!GetModuleHandleExW(
+            GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+            reinterpret_cast<LPCWSTR>(&getPluginModuleHandle),
+            &hInst)) {
+        hInst = GetModuleHandleW(nullptr);
+    }
+    return hInst;
+}
 
 struct ComApartmentGuard {
     HRESULT hr;
@@ -32,7 +43,18 @@ static std::wstring toWide(const std::string& s) {
 
 WreckageWinView::WreckageWinView(WreckageController* controller)
     : CPluginView(nullptr), controller_(controller) {
-    ViewRect r(0, 0, kBaseUiSize, kBaseUiSize);
+    int zIdx = 2;
+    if (controller_) {
+        zIdx = std::clamp(static_cast<int>(std::round(controller_->getParamNormalized(kParamUiZoom) * 2.0)), 0, 2);
+    }
+    uiScale_ = (zIdx == 0) ? 0.50f : ((zIdx == 1) ? 0.75f : 1.00f);
+    int px = static_cast<int>(std::round(kBaseUiSize * uiScale_));
+    int screenH = GetSystemMetrics(SM_CYSCREEN);
+    if (screenH > 0 && px > screenH - 120) {
+        uiScale_ = 0.75f;
+        px = static_cast<int>(std::round(kBaseUiSize * uiScale_));
+    }
+    ViewRect r(0, 0, px, px);
     setRect(r);
 }
 
@@ -49,19 +71,27 @@ tresult PLUGIN_API WreckageWinView::isPlatformTypeSupported(FIDString type) {
 tresult PLUGIN_API WreckageWinView::attached(void* parent, FIDString type) {
     if (!parent || isPlatformTypeSupported(type) != kResultTrue) return kResultFalse;
 
-    HINSTANCE hInst = GetModuleHandleW(nullptr);
+    HINSTANCE hInst = getPluginModuleHandle();
     WNDCLASSEXW wc{};
     wc.cbSize = sizeof(wc);
     wc.style = CS_HREDRAW | CS_VREDRAW;
     wc.lpfnWndProc = &WreckageWinView::wndProc;
     wc.hInstance = hInst;
     wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
+    wc.hbrBackground = nullptr;
     wc.lpszClassName = kWndClassName;
     RegisterClassExW(&wc);
 
-    int zIdx = static_cast<int>(std::round(controller_->getParamNormalized(kParamUiZoom) * 2.0));
-    uiScale_ = (zIdx == 0) ? 0.50f : ((zIdx == 1) ? 0.75f : 1.00f);
-    int px = static_cast<int>(std::round(kBaseUiSize * uiScale_));
+    int px = std::max(200, getRect().getWidth());
+    RECT parentRc{};
+    if (GetClientRect(static_cast<HWND>(parent), &parentRc)) {
+        int pw = parentRc.right - parentRc.left;
+        int ph = parentRc.bottom - parentRc.top;
+        if (pw >= 200 && ph >= 200) {
+            px = std::min(pw, ph);
+        }
+    }
+    uiScale_ = static_cast<float>(px) / static_cast<float>(kBaseUiSize);
     ViewRect r(0, 0, px, px);
     setRect(r);
 
@@ -72,19 +102,26 @@ tresult PLUGIN_API WreckageWinView::attached(void* parent, FIDString type) {
         static_cast<HWND>(parent), nullptr, hInst, this);
 
     if (!hwnd_) return kResultFalse;
+
 #if !WRECKAGE_IS_PLAYER
     DragAcceptFiles(hwnd_, TRUE);
 #endif
+
     D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, &d2dFactory_);
     DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED, __uuidof(IDWriteFactory), reinterpret_cast<IUnknown**>(&dwFactory_));
     createDeviceResources();
-    SetTimer(hwnd_, 1, 33, nullptr);
+
+    ShowWindow(hwnd_, SW_SHOW);
+    UpdateWindow(hwnd_);
+    InvalidateRect(hwnd_, nullptr, FALSE);
+    SetTimer(hwnd_, 1, 50, nullptr);
     return CPluginView::attached(parent, type);
 }
 
 tresult PLUGIN_API WreckageWinView::removed() {
     if (hwnd_) {
         KillTimer(hwnd_, 1);
+        SetWindowLongPtrW(hwnd_, GWLP_USERDATA, 0);
         discardDeviceResources();
         DestroyWindow(hwnd_);
         hwnd_ = nullptr;
@@ -110,11 +147,24 @@ void WreckageWinView::createDeviceResources() {
     if (!rt_ && d2dFactory_ && hwnd_) {
         RECT rc{};
         GetClientRect(hwnd_, &rc);
-        D2D1_SIZE_U sz = D2D1::SizeU(static_cast<UINT32>(std::max<LONG>(1, rc.right - rc.left)),
-                                     static_cast<UINT32>(std::max<LONG>(1, rc.bottom - rc.top)));
-        if (SUCCEEDED(d2dFactory_->CreateHwndRenderTarget(
-                D2D1::RenderTargetProperties(),
-                D2D1::HwndRenderTargetProperties(hwnd_, sz), &rt_))) {
+        UINT32 w = static_cast<UINT32>(std::max<LONG>(1, rc.right - rc.left));
+        UINT32 h = static_cast<UINT32>(std::max<LONG>(1, rc.bottom - rc.top));
+        D2D1_SIZE_U sz = D2D1::SizeU(w, h);
+        D2D1_PIXEL_FORMAT pxFmt = D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_IGNORE);
+        D2D1_HWND_RENDER_TARGET_PROPERTIES hwndProps = D2D1::HwndRenderTargetProperties(hwnd_, sz, D2D1_PRESENT_OPTIONS_NONE);
+
+        HRESULT hr = d2dFactory_->CreateHwndRenderTarget(
+            D2D1::RenderTargetProperties(D2D1_RENDER_TARGET_TYPE_DEFAULT, pxFmt),
+            hwndProps, &rt_);
+
+        if (FAILED(hr) || !rt_) {
+            hr = d2dFactory_->CreateHwndRenderTarget(
+                D2D1::RenderTargetProperties(D2D1_RENDER_TARGET_TYPE_SOFTWARE, pxFmt),
+                hwndProps, &rt_);
+        }
+
+        if (SUCCEEDED(hr) && rt_) {
+            rt_->SetDpi(96.0f, 96.0f);
             rt_->CreateSolidColorBrush(D2D1::ColorF(D2D1::ColorF::Black), &brush_);
         }
     }
@@ -170,7 +220,7 @@ void WreckageWinView::drawFader(float x, float y, float w, float h, float val01,
 
 void WreckageWinView::paint() {
     createDeviceResources();
-    if (!rt_ || !brush_) return;
+    if (!rt_ || !brush_ || !controller_) return;
 
     int thIdx = std::clamp(static_cast<int>(std::round(controller_->getParamNormalized(kParamThemeIndex) * 9.0)), 0, kNumThemes - 1);
     const ThemePalette& th = kThemes[thIdx];
@@ -192,7 +242,8 @@ void WreckageWinView::paint() {
     brush_->SetColor(toD2D(th.border));
     rt_->DrawRectangle(D2D1::RectF(1.0f, 1.0f, kBaseUiSize - 1.0f, kBaseUiSize - 1.0f), brush_, 2.0f);
 
-    if (rt_->EndDraw() == D2DERR_RECREATE_TARGET) {
+    HRESULT hr = rt_->EndDraw();
+    if (hr == D2DERR_RECREATE_TARGET) {
         discardDeviceResources();
     }
 }
@@ -856,22 +907,35 @@ LRESULT CALLBACK WreckageWinView::wndProc(HWND hwnd, UINT msg, WPARAM wParam, LP
     if (msg == WM_NCCREATE) {
         auto* cs = reinterpret_cast<CREATESTRUCTW*>(lParam);
         self = static_cast<WreckageWinView*>(cs->lpCreateParams);
-        SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(self));
+        if (self) {
+            self->hwnd_ = hwnd;
+            SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(self));
+        }
     }
-    return self ? self->handleMessage(msg, wParam, lParam) : DefWindowProcW(hwnd, msg, wParam, lParam);
+    return self ? self->handleMessage(hwnd, msg, wParam, lParam) : DefWindowProcW(hwnd, msg, wParam, lParam);
 }
 
-LRESULT WreckageWinView::handleMessage(UINT msg, WPARAM wParam, LPARAM lParam) {
+LRESULT WreckageWinView::handleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     switch (msg) {
+        case WM_ERASEBKGND:
+            return 1;
+        case WM_SIZE: {
+            UINT w = std::max<UINT>(1, LOWORD(lParam));
+            UINT h = std::max<UINT>(1, HIWORD(lParam));
+            uiScale_ = static_cast<float>(std::min(w, h)) / static_cast<float>(kBaseUiSize);
+            if (rt_) rt_->Resize(D2D1::SizeU(w, h));
+            InvalidateRect(hwnd, nullptr, FALSE);
+            return 0;
+        }
         case WM_PAINT: {
             PAINTSTRUCT ps{};
-            BeginPaint(hwnd_, &ps);
+            BeginPaint(hwnd, &ps);
             paint();
-            EndPaint(hwnd_, &ps);
+            EndPaint(hwnd, &ps);
             return 0;
         }
         case WM_TIMER:
-            InvalidateRect(hwnd_, nullptr, FALSE);
+            InvalidateRect(hwnd, nullptr, FALSE);
             return 0;
         case WM_LBUTTONDOWN:
             onMouseDown(GET_X_LPARAM(lParam) / uiScale_, GET_Y_LPARAM(lParam) / uiScale_);
@@ -883,7 +947,7 @@ LRESULT WreckageWinView::handleMessage(UINT msg, WPARAM wParam, LPARAM lParam) {
             onMouseUp();
             return 0;
         case WM_KEYDOWN:
-            if (HWND p = GetParent(hwnd_)) PostMessageW(p, msg, wParam, lParam);
+            if (HWND p = GetParent(hwnd)) PostMessageW(p, msg, wParam, lParam);
             return 0;
 #if !WRECKAGE_IS_PLAYER
         case WM_DROPFILES: {
@@ -896,13 +960,13 @@ LRESULT WreckageWinView::handleMessage(UINT msg, WPARAM wParam, LPARAM lParam) {
                 }
             }
             DragFinish(hDrop);
-            InvalidateRect(hwnd_, nullptr, FALSE);
+            InvalidateRect(hwnd, nullptr, FALSE);
             return 0;
         }
 #endif
         default: break;
     }
-    return DefWindowProcW(hwnd_, msg, wParam, lParam);
+    return DefWindowProcW(hwnd, msg, wParam, lParam);
 }
 
 } // namespace NoiseMu6ix
