@@ -1,5 +1,6 @@
 build/
 out/
+dist/
 third_party/
 *.vst3/
 *.user
