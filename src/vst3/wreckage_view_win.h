@@ -42,7 +42,7 @@ private:
     void drawLibraryBrowserOverlay(const ThemePalette& th);
     void drawSettingsOverlay(const ThemePalette& th);
 
-    void drawFader(float x, float y, float w, float h, float val01, const wchar_t* label, const ThemePalette& th, bool accentFill = false, bool enabled = true);
+    void drawFader(float x, float y, float w, float h, float val01, const wchar_t* label, const wchar_t* valStr, const ThemePalette& th, bool accentFill = false, bool enabled = true);
     void drawText(const wchar_t* text, float x, float y, float w, float h, uint32_t rgb, float sizePt, bool bold = false, DWRITE_TEXT_ALIGNMENT align = DWRITE_TEXT_ALIGNMENT_LEADING);
     D2D1_COLOR_F toD2D(uint32_t rgb, float alpha = 1.0f) const;
 
@@ -56,7 +56,6 @@ private:
 
     void applyZoomIndex(int idx);
     void openRootFolderDialog();
-    void openLoadWavDialog();
     void openExportNm6Dialog(bool forceSaveAs);
     void rescanRootDirectory();
 
@@ -70,12 +69,14 @@ private:
     ID2D1HwndRenderTarget* rt_ = nullptr;
     ID2D1SolidColorBrush* brush_ = nullptr;
 
-    int activeTab_ = 0;         // 0: SOURCE, 1: STAGE, 2: MASTER FX
-    int stageSubMode_ = 0;      // 0: DRUM (Per-Drum Faders), 1: MIX (4-Mic Faders)
-    bool stageGridSnap_ = true; // Snap-to-grid on Stage
-    bool followMidi_ = true;    // Auto-select slot when MIDI/Key pressed
-    int activeBank_ = 0;        // 0: C3-B3, 1: C4-B4, 2: C5-B5
+    int activeTab_ = 1;          // Default 1 = STAGE & MIX
+    int stageSubMode_ = 0;       // 0 = DRUM, 1 = MIX
+    int activeFxModule_ = 0;     // 0:FILTER, 1:EQ, 2:COMP, 3:SAT, 4:DELAY, 5:REVERB
+    bool stageGridSnap_ = true;
+    bool followMidi_ = true;
+    int activeBank_ = 0;         // 0: C3-B3, 1: C4-B4, 2: C5-B5
     int selectedSlot_ = 0;
+    int selectedWaveItem_ = 0;
     int keyboardOctaveOffset_ = 0;
     bool browserOpen_ = false;
     bool settingsOpen_ = false;
@@ -86,7 +87,7 @@ private:
     std::vector<std::wstring> browserItems_;
     int selectedCategory_ = -1;
 
-    float uiScale_ = 0.75f;
+    float uiScale_ = 1.0f;       // Default 100%
 };
 
 } // namespace NoiseMu6ix

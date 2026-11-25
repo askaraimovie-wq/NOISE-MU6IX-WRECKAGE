@@ -29,6 +29,7 @@ public:
 private:
     void applyNormalizedParam(Steinberg::Vst::ParamID id, Steinberg::Vst::ParamValue val);
     void broadcastSlotSummaryToUi(int slotIdx);
+    void broadcastWaveDataToUi(int slotIdx, int itemIdx);
     void broadcastTelemetryToUi();
 
     WreckageEngine engine_;

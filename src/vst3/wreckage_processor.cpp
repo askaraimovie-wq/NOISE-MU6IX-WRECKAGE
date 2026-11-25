@@ -45,13 +45,8 @@ tresult PLUGIN_API WreckageProcessor::initialize(FUnknown* context) {
     return kResultOk;
 }
 
-tresult PLUGIN_API WreckageProcessor::terminate() {
-    return AudioEffect::terminate();
-}
-
-tresult PLUGIN_API WreckageProcessor::setActive(TBool state) {
-    return AudioEffect::setActive(state);
-}
+tresult PLUGIN_API WreckageProcessor::terminate() { return AudioEffect::terminate(); }
+tresult PLUGIN_API WreckageProcessor::setActive(TBool state) { return AudioEffect::setActive(state); }
 
 tresult PLUGIN_API WreckageProcessor::setupProcessing(ProcessSetup& newSetup) {
     engine_.prepare(newSetup.sampleRate);
@@ -64,14 +59,14 @@ tresult PLUGIN_API WreckageProcessor::canProcessSampleSize(int32 symbolicSampleS
 
 tresult PLUGIN_API WreckageProcessor::setBusArrangements(SpeakerArrangement* inputs, int32 numIns,
                                                          SpeakerArrangement* outputs, int32 numOuts) {
-    if (numIns == 0 && numOuts >= 1 && outputs[0] == SpeakerArr::kStereo) {
+    if (numIns == 0 && numOuts >= 1 && outputs[0] == SpeakerArr::kStereo)
         return AudioEffect::setBusArrangements(inputs, numIns, outputs, numOuts);
-    }
     return kResultFalse;
 }
 
 void WreckageProcessor::applyNormalizedParam(ParamID id, ParamValue val) {
     auto& p = engine_.params();
+    auto& fx = p.fx;
     float f = static_cast<float>(std::clamp(val, 0.0, 1.0));
     switch (id) {
         case kParamBusCloseGain:   p.busGain[0] = f * 1.25f; break;
@@ -82,33 +77,67 @@ void WreckageProcessor::applyNormalizedParam(ParamID id, ParamValue val) {
         case kParamBusRoomBypass:  p.busBypass[1] = (f >= 0.5f); break;
         case kParamBusHallBypass:  p.busBypass[2] = (f >= 0.5f); break;
         case kParamBusSubBypass:   p.busBypass[3] = (f >= 0.5f); break;
-        case kParamFilterOn:       p.filterOn    = (f >= 0.5f); break;
-        case kParamEqOn:           p.eqOn        = (f >= 0.5f); break;
-        case kParamCompOn:         p.compOn      = (f >= 0.5f); break;
-        case kParamTransientOn:    p.transientOn = (f >= 0.5f); break;
-        case kParamPunishOn:       p.punishOn    = (f >= 0.5f); break;
-        case kParamMasterHPF:      p.masterHpfHz = 20.0f * std::pow(20.0f, f); break;
-        case kParamMasterLPF:      p.masterLpfHz = 2000.0f * std::pow(10.0f, f); break;
-        case kParamEqLow:          p.eqLowDb  = (f - 0.5f) * 24.0f; break;
-        case kParamEqMid:          p.eqMidDb  = (f - 0.5f) * 24.0f; break;
-        case kParamEqHigh:         p.eqHighDb = (f - 0.5f) * 24.0f; break;
-        case kParamCompAmount:     p.compAmount = f; break;
-        case kParamTransientPunch: p.transientPunch = f; break;
-        case kParamStereoWidth:    p.stereoWidth = f; break;
-        case kParamMonoBass:       p.monoBass = (f >= 0.5f); break;
+
+        case kParamFilterOn:     fx.filterOn = (f >= 0.5f); break;
+        case kParamFilterType:   fx.filterType = std::clamp(static_cast<int>(std::round(f * 7.0f)), 0, 7); break;
+        case kParamFilterCutoff: fx.filterCutoffHz = 20.0f * std::pow(1000.0f, f); break;
+        case kParamFilterRes:    fx.filterRes = f; break;
+
+        case kParamEqOn:       fx.eqOn = (f >= 0.5f); break;
+        case kParamEqLowFreq:  fx.eqLowFreq  = 30.0f + f * 270.0f; break;
+        case kParamEqLowGain:  fx.eqLowGain  = (f - 0.5f) * 24.0f; break;
+        case kParamEqMidFreq:  fx.eqMidFreq  = 250.0f + f * 3750.0f; break;
+        case kParamEqMidGain:  fx.eqMidGain  = (f - 0.5f) * 24.0f; break;
+        case kParamEqHighFreq: fx.eqHighFreq = 2500.0f + f * 13500.0f; break;
+        case kParamEqHighGain: fx.eqHighGain = (f - 0.5f) * 24.0f; break;
+
+        case kParamCompOn:      fx.compOn = (f >= 0.5f); break;
+        case kParamCompThresh:  fx.compThreshDb = -36.0f + f * 36.0f; break;
+        case kParamCompRatio:   fx.compRatio = 1.0f + f * 11.0f; break;
+        case kParamCompAttack:  fx.compAttackMs = 0.5f + f * 79.5f; break;
+        case kParamCompRelease: fx.compReleaseMs = 15.0f + f * 385.0f; break;
+        case kParamCompKnee:    fx.compKneeDb = f * 12.0f; break;
+        case kParamCompMakeup:  fx.compMakeupDb = f * 15.0f; break;
+
+        case kParamSatOn:     fx.satOn = (f >= 0.5f); break;
+        case kParamSatDrive:  fx.satDrive = f; break;
+        case kParamSatWarmth: fx.satWarmth = f; break;
+        case kParamSatMix:    fx.satMix = f; break;
+
+        case kParamDelayOn:       fx.delayOn = (f >= 0.5f); break;
+        case kParamDelayMode:     fx.delayMode = (f >= 0.5f) ? 1 : 0; break;
+        case kParamDelayTime:     fx.delayTimeMs = 20.0f + f * 780.0f; break;
+        case kParamDelayFeedback: fx.delayFeedback = f * 0.88f; break;
+        case kParamDelayTone:     fx.delayTone = f; break;
+        case kParamDelayWidth:    fx.delayWidth = f; break;
+        case kParamDelayMix:      fx.delayMix = f; break;
+
+        case kParamRevOn:       fx.revOn = (f >= 0.5f); break;
+        case kParamRevMode:     fx.revMode = std::clamp(static_cast<int>(std::round(f * 2.0f)), 0, 2); break;
+        case kParamRevPreDelay: fx.revPreDelayMs = f * 120.0f; break;
+        case kParamRevDecay:    fx.revDecaySec = 0.2f + f * 5.8f; break;
+        case kParamRevSize:     fx.revSize = f; break;
+        case kParamRevLowCut:   fx.revLowCutHz = 20.0f + f * 480.0f; break;
+        case kParamRevHighCut:  fx.revHighCutHz = 1500.0f + f * 16500.0f; break;
+        case kParamRevMix:      fx.revMix = f; break;
+
+        case kParamLimiterOn:     fx.limiterOn = (f >= 0.5f); break;
+        case kParamMonoBass:      fx.monoBass = (f >= 0.5f); break;
         case kParamVelCurve:
             p.velCurve = (f < 0.33f) ? VelocityCurve::Soft : ((f < 0.67f) ? VelocityCurve::Linear : VelocityCurve::Hard);
             break;
-        case kParamLimiterOn:      p.limiterOn = (f >= 0.5f); break;
-        case kParamMasterOutGain:  p.masterOutGain = f * 1.2f; break;
-        case kParamPunishAmount:   p.punishAmount = f; break;
+        case kParamGlobalFakeRR:  p.globalFakeRR  = (f >= 0.5f); break;
+        case kParamGlobalFakeVel: p.globalFakeVel = (f >= 0.5f); break;
+        case kParamGlobalFakeMic: p.globalFakeMic = (f >= 0.5f); break;
+
+        case kParamPunishOn:     fx.punishOn = (f >= 0.5f); break;
+        case kParamPunishAmount: fx.punishAmount = f; break;
         case kParamPunishMode:
-            p.punishMode = (f < 0.33f) ? PunishMode::GentlyNow : ((f < 0.67f) ? PunishMode::HurtMePlenty : PunishMode::Nightmare);
+            fx.punishMode = (f < 0.33f) ? PunishMode::GentlyNow : ((f < 0.67f) ? PunishMode::HurtMePlenty : PunishMode::Nightmare);
             break;
-        case kParamThemeIndex:     p.themeIndex = std::clamp(static_cast<int>(std::round(f * 9.0f)), 0, 9); break;
-        case kParamUiZoom:         p.zoomIndex  = std::clamp(static_cast<int>(std::round(f * 2.0f)), 0, 2); break;
-        case kParamStageMasterDepth: p.stageMasterDepth = f * 1.5f; break;
-        case kParamSmartIntensity:   p.smartIntensity   = f; break;
+
+        case kParamThemeIndex: p.themeIndex = std::clamp(static_cast<int>(std::round(f * 9.0f)), 0, 9); break;
+        case kParamUiZoom:     p.zoomIndex  = std::clamp(static_cast<int>(std::round(f * 2.0f)), 0, 2); break;
         default: break;
     }
 }
@@ -122,9 +151,8 @@ tresult PLUGIN_API WreckageProcessor::process(ProcessData& data) {
                 if (numPts > 0) {
                     ParamValue val = 0.0;
                     int32 sampleOffset = 0;
-                    if (q->getPoint(numPts - 1, sampleOffset, val) == kResultTrue) {
+                    if (q->getPoint(numPts - 1, sampleOffset, val) == kResultTrue)
                         applyNormalizedParam(q->getParameterId(), val);
-                    }
                 }
             }
         }
@@ -182,123 +210,62 @@ tresult PLUGIN_API WreckageProcessor::setState(IBStream* state) {
     if (!state) return kResultFalse;
     IBStreamer s(state, kLittleEndian);
     int32 ver = 0;
-    if (!s.readInt32(ver) || ver != 2) return kResultFalse;
+    if (!s.readInt32(ver) || ver != 3) return kResultFalse;
 
     auto& p = engine_.params();
+    auto& fx = p.fx;
     for (int i = 0; i < 4; ++i) {
         s.readFloat(p.busGain[i]);
         int8 byp = 0; s.readInt8(byp); p.busBypass[i] = (byp != 0);
     }
-    int8 fo = 1, eo = 1, co = 1, to = 1, po = 1;
-    s.readInt8(fo); p.filterOn = (fo != 0);
-    s.readInt8(eo); p.eqOn = (eo != 0);
-    s.readInt8(co); p.compOn = (co != 0);
-    s.readInt8(to); p.transientOn = (to != 0);
-    s.readInt8(po); p.punishOn = (po != 0);
+    int8 gr = 1, gv = 1, gm = 1;
+    s.readInt8(gr); p.globalFakeRR = (gr != 0);
+    s.readInt8(gv); p.globalFakeVel = (gv != 0);
+    s.readInt8(gm); p.globalFakeMic = (gm != 0);
 
-    s.readFloat(p.masterHpfHz);
-    s.readFloat(p.masterLpfHz);
-    s.readFloat(p.eqLowDb);
-    s.readFloat(p.eqMidDb);
-    s.readFloat(p.eqHighDb);
-    s.readFloat(p.compAmount);
-    s.readFloat(p.transientPunch);
-    s.readFloat(p.stereoWidth);
-    int8 mb = 1, lim = 1;
-    s.readInt8(mb); p.monoBass = (mb != 0);
-    s.readInt8(lim); p.limiterOn = (lim != 0);
-    int32 vc = 1, pm = 1;
-    s.readInt32(vc); p.velCurve = static_cast<VelocityCurve>(vc);
-    s.readFloat(p.masterOutGain);
-    s.readFloat(p.punishAmount);
-    s.readInt32(pm); p.punishMode = static_cast<PunishMode>(pm);
+    int8 b = 0; int32 iv = 0;
+    s.readInt8(b); fx.filterOn = (b != 0); s.readInt32(fx.filterType); s.readFloat(fx.filterCutoffHz); s.readFloat(fx.filterRes);
+    s.readInt8(b); fx.eqOn = (b != 0); s.readFloat(fx.eqLowFreq); s.readFloat(fx.eqLowGain); s.readFloat(fx.eqMidFreq); s.readFloat(fx.eqMidGain); s.readFloat(fx.eqHighFreq); s.readFloat(fx.eqHighGain);
+    s.readInt8(b); fx.compOn = (b != 0); s.readFloat(fx.compThreshDb); s.readFloat(fx.compRatio); s.readFloat(fx.compAttackMs); s.readFloat(fx.compReleaseMs); s.readFloat(fx.compKneeDb); s.readFloat(fx.compMakeupDb);
+    s.readInt8(b); fx.satOn = (b != 0); s.readFloat(fx.satDrive); s.readFloat(fx.satWarmth); s.readFloat(fx.satMix);
+    s.readInt8(b); fx.delayOn = (b != 0); s.readInt32(fx.delayMode); s.readFloat(fx.delayTimeMs); s.readFloat(fx.delayFeedback); s.readFloat(fx.delayTone); s.readFloat(fx.delayWidth); s.readFloat(fx.delayMix);
+    s.readInt8(b); fx.revOn = (b != 0); s.readInt32(fx.revMode); s.readFloat(fx.revPreDelayMs); s.readFloat(fx.revDecaySec); s.readFloat(fx.revSize); s.readFloat(fx.revLowCutHz); s.readFloat(fx.revHighCutHz); s.readFloat(fx.revMix);
+    s.readInt8(b); fx.limiterOn = (b != 0);
+    s.readInt8(b); fx.monoBass = (b != 0);
+    s.readInt32(iv); p.velCurve = static_cast<VelocityCurve>(iv);
+    s.readInt8(b); fx.punishOn = (b != 0); s.readFloat(fx.punishAmount); s.readInt32(iv); fx.punishMode = static_cast<PunishMode>(iv);
     s.readInt32(p.themeIndex);
     s.readInt32(p.zoomIndex);
-
-    for (int i = 0; i < kTotalSlots; ++i) {
-        auto& sl = engine_.slot(i);
-        int32 note = kBaseMidiNote + i;
-        uint32 col = 0;
-        int8 hasCol = 0, os = 1, rev = 0, prg = 0;
-        int32 cg = 0, rrM = 0, velM = 0, micM = 0;
-        s.readInt32(note); sl.midiNote = note;
-        s.readInt32u(col); sl.keyColor = col;
-        s.readInt8(hasCol); sl.hasCustomColor = (hasCol != 0);
-        s.readFloat(sl.gain);
-        s.readFloat(sl.pitchSemitones);
-        s.readFloat(sl.toneLowDb);
-        s.readFloat(sl.toneHighDb);
-        s.readFloat(sl.attackMs);
-        s.readFloat(sl.releaseMs);
-        s.readFloat(sl.xfade);
-        s.readFloat(sl.stageX);
-        s.readFloat(sl.stageY);
-        s.readInt8(os); sl.oneShot = (os != 0);
-        s.readInt32(cg); sl.chokeGroup = cg;
-        s.readInt8(rev); sl.reverse = (rev != 0);
-        s.readInt8(prg); sl.purged = (prg != 0);
-        s.readInt32(rrM);  sl.rrMode  = static_cast<SmartMode>(rrM);
-        s.readInt32(velM); sl.velMode = static_cast<SmartMode>(velM);
-        s.readInt32(micM); sl.micMode = static_cast<SmartMode>(micM);
-    }
     return kResultOk;
 }
 
 tresult PLUGIN_API WreckageProcessor::getState(IBStream* state) {
     if (!state) return kResultFalse;
     IBStreamer s(state, kLittleEndian);
-    s.writeInt32(2);
+    s.writeInt32(3);
 
     const auto& p = engine_.params();
+    const auto& fx = p.fx;
     for (int i = 0; i < 4; ++i) {
         s.writeFloat(p.busGain[i]);
         s.writeInt8(p.busBypass[i] ? 1 : 0);
     }
-    s.writeInt8(p.filterOn ? 1 : 0);
-    s.writeInt8(p.eqOn ? 1 : 0);
-    s.writeInt8(p.compOn ? 1 : 0);
-    s.writeInt8(p.transientOn ? 1 : 0);
-    s.writeInt8(p.punishOn ? 1 : 0);
+    s.writeInt8(p.globalFakeRR ? 1 : 0);
+    s.writeInt8(p.globalFakeVel ? 1 : 0);
+    s.writeInt8(p.globalFakeMic ? 1 : 0);
 
-    s.writeFloat(p.masterHpfHz);
-    s.writeFloat(p.masterLpfHz);
-    s.writeFloat(p.eqLowDb);
-    s.writeFloat(p.eqMidDb);
-    s.writeFloat(p.eqHighDb);
-    s.writeFloat(p.compAmount);
-    s.writeFloat(p.transientPunch);
-    s.writeFloat(p.stereoWidth);
-    s.writeInt8(p.monoBass ? 1 : 0);
-    s.writeInt8(p.limiterOn ? 1 : 0);
+    s.writeInt8(fx.filterOn ? 1 : 0); s.writeInt32(fx.filterType); s.writeFloat(fx.filterCutoffHz); s.writeFloat(fx.filterRes);
+    s.writeInt8(fx.eqOn ? 1 : 0); s.writeFloat(fx.eqLowFreq); s.writeFloat(fx.eqLowGain); s.writeFloat(fx.eqMidFreq); s.writeFloat(fx.eqMidGain); s.writeFloat(fx.eqHighFreq); s.writeFloat(fx.eqHighGain);
+    s.writeInt8(fx.compOn ? 1 : 0); s.writeFloat(fx.compThreshDb); s.writeFloat(fx.compRatio); s.writeFloat(fx.compAttackMs); s.writeFloat(fx.compReleaseMs); s.writeFloat(fx.compKneeDb); s.writeFloat(fx.compMakeupDb);
+    s.writeInt8(fx.satOn ? 1 : 0); s.writeFloat(fx.satDrive); s.writeFloat(fx.satWarmth); s.writeFloat(fx.satMix);
+    s.writeInt8(fx.delayOn ? 1 : 0); s.writeInt32(fx.delayMode); s.writeFloat(fx.delayTimeMs); s.writeFloat(fx.delayFeedback); s.writeFloat(fx.delayTone); s.writeFloat(fx.delayWidth); s.writeFloat(fx.delayMix);
+    s.writeInt8(fx.revOn ? 1 : 0); s.writeInt32(fx.revMode); s.writeFloat(fx.revPreDelayMs); s.writeFloat(fx.revDecaySec); s.writeFloat(fx.revSize); s.writeFloat(fx.revLowCutHz); s.writeFloat(fx.revHighCutHz); s.writeFloat(fx.revMix);
+    s.writeInt8(fx.limiterOn ? 1 : 0);
+    s.writeInt8(fx.monoBass ? 1 : 0);
     s.writeInt32(static_cast<int32>(p.velCurve));
-    s.writeFloat(p.masterOutGain);
-    s.writeFloat(p.punishAmount);
-    s.writeInt32(static_cast<int32>(p.punishMode));
+    s.writeInt8(fx.punishOn ? 1 : 0); s.writeFloat(fx.punishAmount); s.writeInt32(static_cast<int32>(fx.punishMode));
     s.writeInt32(p.themeIndex);
     s.writeInt32(p.zoomIndex);
-
-    for (int i = 0; i < kTotalSlots; ++i) {
-        const auto& sl = engine_.slot(i);
-        s.writeInt32(sl.midiNote);
-        s.writeInt32u(sl.keyColor);
-        s.writeInt8(sl.hasCustomColor ? 1 : 0);
-        s.writeFloat(sl.gain);
-        s.writeFloat(sl.pitchSemitones);
-        s.writeFloat(sl.toneLowDb);
-        s.writeFloat(sl.toneHighDb);
-        s.writeFloat(sl.attackMs);
-        s.writeFloat(sl.releaseMs);
-        s.writeFloat(sl.xfade);
-        s.writeFloat(sl.stageX);
-        s.writeFloat(sl.stageY);
-        s.writeInt8(sl.oneShot ? 1 : 0);
-        s.writeInt32(sl.chokeGroup);
-        s.writeInt8(sl.reverse ? 1 : 0);
-        s.writeInt8(sl.purged ? 1 : 0);
-        s.writeInt32(static_cast<int32>(sl.rrMode));
-        s.writeInt32(static_cast<int32>(sl.velMode));
-        s.writeInt32(static_cast<int32>(sl.micMode));
-    }
     return kResultOk;
 }
 
@@ -308,13 +275,36 @@ void WreckageProcessor::broadcastSlotSummaryToUi(int slotIdx) {
         auto* attrs = msg->getAttributes();
         const auto& sl = engine_.slot(slotIdx);
         attrs->setInt("slot", slotIdx);
-        attrs->setInt("velCount", sl.velocityCount());
-        attrs->setInt("rrCount", sl.maxRRCount());
+        attrs->setInt("itemCount", sl.itemCount());
         attrs->setInt("color", static_cast<int64>(sl.hasCustomColor ? sl.keyColor : 0));
         attrs->setInt("midiNote", sl.midiNote);
         attrs->setFloat("x", sl.stageX);
         attrs->setFloat("y", sl.stageY);
         attrs->setBinary("nameUtf8", sl.name.data(), static_cast<uint32>(sl.name.size()));
+        sendMessage(msg);
+        msg->release();
+    }
+}
+
+void WreckageProcessor::broadcastWaveDataToUi(int slotIdx, int itemIdx) {
+    const auto& sl = engine_.slot(slotIdx);
+    if (itemIdx < 0 || itemIdx >= static_cast<int>(sl.items.size())) return;
+    const auto& it = sl.items[static_cast<size_t>(itemIdx)];
+    auto prim = it.primarySource();
+    if (!prim) return;
+
+    if (auto* msg = allocateMessage()) {
+        msg->setMessageID("WaveUpdated");
+        auto* attrs = msg->getAttributes();
+        attrs->setInt("slot", slotIdx);
+        attrs->setInt("item", itemIdx);
+        attrs->setFloat("start", it.startNorm);
+        attrs->setFloat("end", it.endNorm);
+        attrs->setFloat("fadeIn", it.fadeInNorm);
+        attrs->setFloat("fadeOut", it.fadeOutNorm);
+        attrs->setFloat("velMin", it.velMin);
+        attrs->setFloat("velMax", it.velMax);
+        attrs->setBinary("peaks", prim->peaks.data(), static_cast<uint32>(prim->peaks.size() * sizeof(float)));
         sendMessage(msg);
         msg->release();
     }
@@ -346,8 +336,7 @@ tresult PLUGIN_API WreckageProcessor::notify(IMessage* message) {
 
     if (strcmp(id, "NoteOn") == 0) {
         int64 note = kBaseMidiNote; double vel = 0.9;
-        attrs->getInt("note", note);
-        attrs->getFloat("vel", vel);
+        attrs->getInt("note", note); attrs->getFloat("vel", vel);
         engine_.triggerNoteOn(static_cast<int>(note), static_cast<float>(vel));
         broadcastTelemetryToUi();
         return kResultOk;
@@ -364,16 +353,27 @@ tresult PLUGIN_API WreckageProcessor::notify(IMessage* message) {
         broadcastTelemetryToUi();
         return kResultOk;
     }
+    if (strcmp(id, "ResetKit") == 0) {
+        engine_.resetKit();
+        for (int i = 0; i < kTotalSlots; ++i) broadcastSlotSummaryToUi(i);
+        broadcastTelemetryToUi();
+        return kResultOk;
+    }
+    if (strcmp(id, "ClearSlot") == 0) {
+        int64 sl = 0; attrs->getInt("slot", sl);
+        engine_.clearSlot(static_cast<int>(sl));
+        broadcastSlotSummaryToUi(static_cast<int>(sl));
+        broadcastTelemetryToUi();
+        return kResultOk;
+    }
     if (strcmp(id, "ResetStage") == 0) {
-        engine_.resetStageSpread();
+        engine_.resetStagePositions();
         for (int i = 0; i < kTotalSlots; ++i) broadcastSlotSummaryToUi(i);
         return kResultOk;
     }
     if (strcmp(id, "SetStageXY") == 0) {
-        int64 sl = 0; double x = 0.0, y = 0.25;
-        attrs->getInt("slot", sl);
-        attrs->getFloat("x", x);
-        attrs->getFloat("y", y);
+        int64 sl = 0; double x = 0.0, y = 0.0;
+        attrs->getInt("slot", sl); attrs->getFloat("x", x); attrs->getFloat("y", y);
         auto& s = engine_.slot(static_cast<int>(sl));
         s.stageX = std::clamp(static_cast<float>(x), -1.0f, 1.0f);
         s.stageY = std::clamp(static_cast<float>(y), 0.0f, 1.0f);
@@ -381,17 +381,14 @@ tresult PLUGIN_API WreckageProcessor::notify(IMessage* message) {
     }
     if (strcmp(id, "SetKeyColor") == 0) {
         int64 sl = 0, col = 0;
-        attrs->getInt("slot", sl);
-        attrs->getInt("color", col);
+        attrs->getInt("slot", sl); attrs->getInt("color", col);
         auto& s = engine_.slot(static_cast<int>(sl));
         s.keyColor = static_cast<uint32_t>(col);
         s.hasCustomColor = (col != 0);
         return kResultOk;
     }
     if (strcmp(id, "RenameSlot") == 0) {
-        int64 sl = 0;
-        const void* ptr = nullptr;
-        uint32 sz = 0;
+        int64 sl = 0; const void* ptr = nullptr; uint32 sz = 0;
         attrs->getInt("slot", sl);
         if (attrs->getBinary("nameUtf8", ptr, sz) == kResultOk && ptr && sz > 0) {
             auto& s = engine_.slot(static_cast<int>(sl));
@@ -400,59 +397,66 @@ tresult PLUGIN_API WreckageProcessor::notify(IMessage* message) {
         }
         return kResultOk;
     }
-    if (strcmp(id, "SetSmartMode") == 0) {
-        int64 sl = 0, which = 0, mode = 0;
-        attrs->getInt("slot", sl);
-        attrs->getInt("which", which);
-        attrs->getInt("mode", mode);
-        auto& s = engine_.slot(static_cast<int>(sl));
-        SmartMode sm = static_cast<SmartMode>(std::clamp<int64>(mode, 0, 2));
-        if (which == 0) s.rrMode = sm;
-        else if (which == 1) s.velMode = sm;
-        else if (which == 2) s.micMode = sm;
-        return kResultOk;
-    }
     if (strcmp(id, "SetSlotProp") == 0) {
         int64 sl = 0, prop = 0, ival = 0; double fval = 0.0;
-        attrs->getInt("slot", sl);
-        attrs->getInt("prop", prop);
-        attrs->getInt("ival", ival);
-        attrs->getFloat("fval", fval);
+        attrs->getInt("slot", sl); attrs->getInt("prop", prop); attrs->getInt("ival", ival); attrs->getFloat("fval", fval);
         auto& s = engine_.slot(static_cast<int>(sl));
         switch (prop) {
-            case 0: s.gain = static_cast<float>(fval) * 1.5f; break;
+            case 0: s.gain = static_cast<float>(fval); break; // 0..1 (0.80 = 80%)
             case 1: s.pitchSemitones = (static_cast<float>(fval) - 0.5f) * 48.0f; break;
             case 2: s.attackMs = static_cast<float>(fval) * 200.0f; break;
             case 3: s.releaseMs = 20.0f + static_cast<float>(fval) * 3980.0f; break;
-            case 4: s.xfade = static_cast<float>(fval); break;
             case 5: s.oneShot = (ival != 0); break;
             case 6: s.chokeGroup = static_cast<int>(ival); break;
             case 7: s.reverse = (ival != 0); break;
             case 8: s.purged = (ival != 0); break;
-            case 9: s.midiNote = std::clamp(static_cast<int>(ival), 0, 127); break;
             case 10: s.toneLowDb  = (static_cast<float>(fval) - 0.5f) * 24.0f; break;
             case 11: s.toneHighDb = (static_cast<float>(fval) - 0.5f) * 24.0f; break;
             default: break;
         }
         return kResultOk;
     }
+    if (strcmp(id, "SetWaveEdit") == 0) {
+        int64 sl = 0, item = 0;
+        double st = 0.0, en = 1.0, fi = 0.0, fo = 0.0, vmin = 0.0, vmax = 1.0;
+        attrs->getInt("slot", sl); attrs->getInt("item", item);
+        attrs->getFloat("start", st); attrs->getFloat("end", en);
+        attrs->getFloat("fadeIn", fi); attrs->getFloat("fadeOut", fo);
+        attrs->getFloat("velMin", vmin); attrs->getFloat("velMax", vmax);
+        auto& s = engine_.slot(static_cast<int>(sl));
+        if (item >= 0 && item < static_cast<int>(s.items.size())) {
+            auto& it = s.items[static_cast<size_t>(item)];
+            it.startNorm   = std::clamp(static_cast<float>(st), 0.0f, 0.98f);
+            it.endNorm     = std::clamp(static_cast<float>(en), it.startNorm + 0.02f, 1.0f);
+            it.fadeInNorm  = std::clamp(static_cast<float>(fi), 0.0f, 0.5f);
+            it.fadeOutNorm = std::clamp(static_cast<float>(fo), 0.0f, 0.5f);
+            it.velMin      = std::clamp(static_cast<float>(vmin), 0.0f, 0.95f);
+            it.velMax      = std::clamp(static_cast<float>(vmax), it.velMin + 0.05f, 1.0f);
+        }
+        return kResultOk;
+    }
+    if (strcmp(id, "RequestWave") == 0) {
+        int64 sl = 0, item = 0;
+        attrs->getInt("slot", sl); attrs->getInt("item", item);
+        broadcastWaveDataToUi(static_cast<int>(sl), static_cast<int>(item));
+        return kResultOk;
+    }
     if (strcmp(id, "LoadWav") == 0) {
-        int64 sl = 0;
-        const void* ptr = nullptr;
-        uint32 sz = 0;
+        int64 sl = 0; const void* ptr = nullptr; uint32 sz = 0;
         attrs->getInt("slot", sl);
         if (attrs->getBinary("pathUtf8", ptr, sz) == kResultOk && ptr && sz > 0) {
             std::string u8(static_cast<const char*>(ptr), sz);
             if (engine_.loadSampleIntoSlot(static_cast<int>(sl), pathFromUtf8(u8))) {
+                int newIdx = std::max(0, engine_.slot(static_cast<int>(sl)).itemCount() - 1);
                 broadcastSlotSummaryToUi(static_cast<int>(sl));
+                broadcastWaveDataToUi(static_cast<int>(sl), newIdx);
                 broadcastTelemetryToUi();
             }
         }
         return kResultOk;
     }
     if (strcmp(id, "ExportNm6") == 0) {
-        const void* ptr = nullptr;
-        uint32 sz = 0;
+        const void* ptr = nullptr; uint32 sz = 0;
         if (attrs->getBinary("pathUtf8", ptr, sz) == kResultOk && ptr && sz > 0) {
             std::string u8(static_cast<const char*>(ptr), sz);
             auto p = pathFromUtf8(u8);
@@ -467,12 +471,14 @@ tresult PLUGIN_API WreckageProcessor::notify(IMessage* message) {
         return kResultOk;
     }
     if (strcmp(id, "LoadNm6") == 0) {
-        const void* ptr = nullptr;
-        uint32 sz = 0;
+        const void* ptr = nullptr; uint32 sz = 0;
         if (attrs->getBinary("pathUtf8", ptr, sz) == kResultOk && ptr && sz > 0) {
             std::string u8(static_cast<const char*>(ptr), sz);
             if (engine_.loadKitFromNm6(pathFromUtf8(u8))) {
-                for (int i = 0; i < kTotalSlots; ++i) broadcastSlotSummaryToUi(i);
+                for (int i = 0; i < kTotalSlots; ++i) {
+                    broadcastSlotSummaryToUi(i);
+                    if (engine_.slot(i).itemCount() > 0) broadcastWaveDataToUi(i, 0);
+                }
                 broadcastTelemetryToUi();
             }
         }
