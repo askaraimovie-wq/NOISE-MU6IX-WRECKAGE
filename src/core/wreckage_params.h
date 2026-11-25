@@ -16,43 +16,72 @@ enum ParamIDs : uint32_t {
     kParamBusHallBypass  = 112,
     kParamBusSubBypass   = 113,
 
-    // Master FX Rack + Individual On/Off Bypasses
-    kParamMasterHPF      = 200,
-    kParamMasterLPF      = 201,
-    kParamEqLow          = 202,
-    kParamEqMid          = 203,
-    kParamEqHigh         = 204,
-    kParamCompAmount     = 205,
-    kParamTransientPunch = 206,
-    kParamStereoWidth    = 207,
-    kParamMonoBass       = 208,
-    kParamVelCurve       = 209,
-    kParamLimiterOn      = 210,
-    kParamMasterOutGain  = 211,
+    // Master FX Rack (FabFilter & Valhalla Inspired Modules)
+    // Filter
+    kParamFilterOn       = 200,
+    kParamFilterType     = 201, // 0..7: LP24, LP12, HP24, HP12, BP12, BP24, Peak, Notch
+    kParamFilterCutoff   = 202, // 20 Hz .. 20 kHz
+    kParamFilterRes      = 203, // 0.0 .. 1.0
 
-    kParamFilterOn       = 220,
-    kParamEqOn           = 221,
-    kParamCompOn         = 222,
-    kParamTransientOn    = 223,
-    kParamPunishOn       = 224,
+    // 3-Band EQ (Pro-Q style)
+    kParamEqOn           = 210,
+    kParamEqLowFreq      = 211, // 30 .. 300 Hz
+    kParamEqLowGain      = 212, // -12 .. +12 dB
+    kParamEqMidFreq      = 213, // 250 .. 4000 Hz
+    kParamEqMidGain      = 214, // -12 .. +12 dB
+    kParamEqHighFreq     = 215, // 2500 .. 16000 Hz
+    kParamEqHighGain     = 216, // -12 .. +12 dB
+
+    // Compressor (Pro-C style)
+    kParamCompOn         = 220,
+    kParamCompThresh     = 221, // -36 .. 0 dB
+    kParamCompRatio      = 222, // 1:1 .. 12:1
+    kParamCompAttack     = 223, // 0.5 .. 80 ms
+    kParamCompRelease    = 224, // 15 .. 400 ms
+    kParamCompKnee       = 225, // 0 .. 12 dB (Shoulder)
+    kParamCompMakeup     = 226, // 0 .. +15 dB
+
+    // Saturator (Saturn style)
+    kParamSatOn          = 230,
+    kParamSatDrive       = 231, // 0 .. 100%
+    kParamSatWarmth      = 232, // 0 .. 100% (Tilt/Tone)
+    kParamSatMix         = 233, // 0 .. 100%
+
+    // Delay (ValhallaDelay style)
+    kParamDelayOn        = 240,
+    kParamDelayMode      = 241, // 0: Modern, 1: Vintage
+    kParamDelayTime      = 242, // 20 .. 800 ms
+    kParamDelayFeedback  = 243, // 0 .. 88%
+    kParamDelayTone      = 244, // LP/HP damping
+    kParamDelayWidth     = 245, // Ping-pong / 3D stereo spread
+    kParamDelayMix       = 246, // 0 .. 100%
+
+    // Reverb (ValhallaVintageVerb 3D Space style)
+    kParamRevOn          = 250,
+    kParamRevMode        = 251, // 0: Room, 1: Plate, 2: Hall
+    kParamRevPreDelay    = 252, // 0 .. 120 ms
+    kParamRevDecay       = 253, // 0.2 .. 6.0 s
+    kParamRevSize        = 254, // 20 .. 100%
+    kParamRevLowCut      = 255, // 20 .. 500 Hz
+    kParamRevHighCut     = 256, // 1500 .. 18000 Hz
+    kParamRevMix         = 257, // 0 .. 100%
+
+    // Global Master & Global Fake Engines
+    kParamLimiterOn      = 260,
+    kParamMonoBass       = 261,
+    kParamVelCurve       = 262, // 0: Soft, 1: Linear, 2: Hard
+    kParamGlobalFakeRR   = 263, // 0: OFF, 1: ON
+    kParamGlobalFakeVel  = 264, // 0: OFF, 1: ON
+    kParamGlobalFakeMic  = 265, // 0: OFF, 1: ON
 
     // Signature PUNISH Bar
-    kParamPunishAmount   = 300,
-    kParamPunishMode     = 301,
+    kParamPunishOn       = 300,
+    kParamPunishAmount   = 301,
+    kParamPunishMode     = 302, // 0: Gently Now, 1: Hurt Me Plenty, 2: Nightmare
 
     // UI Preferences
-    kParamThemeIndex     = 400,
-    kParamUiZoom         = 401,
-
-    // Global Quick Controls
-    kParamStageMasterDepth = 500,
-    kParamSmartIntensity   = 501
-};
-
-enum class SmartMode : uint8_t {
-    Auto = 0,
-    ForceOn = 1,
-    ForceOff = 2
+    kParamThemeIndex     = 400, // Default 0 = PAPER SKETCH
+    kParamUiZoom         = 401  // Default 2 = 100%
 };
 
 enum class MicBus : uint8_t {
@@ -81,5 +110,6 @@ constexpr int kTotalSlots      = kNumBanks * kSlotsPerBank; // 36 slots (C3..B5)
 constexpr int kBaseMidiNote    = 48; // C3 (Bank 1: C3-B3, Bank 2: C4-B4, Bank 3: C5-B5)
 constexpr int kMaxVoices       = 128;
 constexpr int kBaseUiSize      = 840;
+constexpr int kWavePeakBins    = 256;
 
 } // namespace NoiseMu6ix

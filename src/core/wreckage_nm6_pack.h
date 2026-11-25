@@ -68,7 +68,9 @@ struct Nm6Pack {
 
     bool decodeSample(uint32_t sampleId, AudioBuffer& out) const {
         if (sampleId >= samples.size()) return false;
-        return decodeAudio(samples[sampleId], out);
+        bool ok = decodeAudio(samples[sampleId], out);
+        if (ok) out.rebuildPeaks();
+        return ok;
     }
 
     bool saveAtomic(const std::filesystem::path& targetPath) const {
@@ -96,9 +98,7 @@ struct Nm6Pack {
                 f.write(reinterpret_cast<const char*>(&c), 1);
                 uint32_t len = static_cast<uint32_t>(s.encodedBytes.size());
                 writeU32(f, len);
-                if (len > 0) {
-                    f.write(reinterpret_cast<const char*>(s.encodedBytes.data()), len);
-                }
+                if (len > 0) f.write(reinterpret_cast<const char*>(s.encodedBytes.data()), len);
             }
             f.flush();
             if (!f.good()) return false;

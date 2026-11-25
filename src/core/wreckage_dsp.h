@@ -19,14 +19,11 @@ inline float fastTanh(float x) {
 struct DCBlocker {
     float x1 = 0.0f, y1 = 0.0f;
     float r = 0.9965f;
-    void setSampleRate(float sr) {
-        r = std::exp(-2.0f * kPi * 20.0f / std::max(8000.0f, sr));
-    }
+    void setSampleRate(float sr) { r = std::exp(-2.0f * kPi * 20.0f / std::max(8000.0f, sr)); }
     void reset() { x1 = y1 = 0.0f; }
     inline float process(float x) {
         float y = x - x1 + r * y1;
-        x1 = x;
-        y1 = y;
+        x1 = x; y1 = y;
         return y;
     }
 };
@@ -63,6 +60,32 @@ struct Biquad {
         a2 = (1.0f - alpha) / a0;
     }
 
+    void setBandPass(float sr, float freq, float q = 1.2f) {
+        freq = std::clamp(freq, 25.0f, sr * 0.45f);
+        float w0 = 2.0f * kPi * freq / sr;
+        float c = std::cos(w0), s = std::sin(w0);
+        float alpha = s / (2.0f * std::max(0.2f, q));
+        float a0 = 1.0f + alpha;
+        b0 = alpha / a0;
+        b1 = 0.0f;
+        b2 = -alpha / a0;
+        a1 = (-2.0f * c) / a0;
+        a2 = (1.0f - alpha) / a0;
+    }
+
+    void setNotch(float sr, float freq, float q = 1.5f) {
+        freq = std::clamp(freq, 25.0f, sr * 0.45f);
+        float w0 = 2.0f * kPi * freq / sr;
+        float c = std::cos(w0), s = std::sin(w0);
+        float alpha = s / (2.0f * std::max(0.2f, q));
+        float a0 = 1.0f + alpha;
+        b0 = 1.0f / a0;
+        b1 = (-2.0f * c) / a0;
+        b2 = 1.0f / a0;
+        a1 = (-2.0f * c) / a0;
+        a2 = (1.0f - alpha) / a0;
+    }
+
     void setPeaking(float sr, float freq, float q, float gainDb) {
         freq = std::clamp(freq, 25.0f, sr * 0.45f);
         float A = std::pow(10.0f, gainDb / 40.0f);
@@ -89,34 +112,49 @@ class StereoSpaceBus {
 public:
     void prepare(float sampleRate, float preDelayMs, float decaySeconds, float hpHz, float lpHz) {
         sr_ = std::max(8000.0f, sampleRate);
-        preDelaySamples_ = std::max(1, static_cast<int>(sr_ * preDelayMs * 0.001f));
-        preBufL_.assign(static_cast<size_t>(preDelaySamples_ + 4), 0.0f);
-        preBufR_.assign(static_cast<size_t>(preDelaySamples_ + 4), 0.0f);
+        maxPreSamples_ = std::max(4, static_cast<int>(sr_ * 0.25f));
+        preBufL_.assign(static_cast<size_t>(maxPreSamples_), 0.0f);
+        preBufR_.assign(static_cast<size_t>(maxPreSamples_), 0.0f);
+        preDelaySamples_ = std::clamp(static_cast<int>(sr_ * preDelayMs * 0.001f), 1, maxPreSamples_ - 1);
         preIdx_ = 0;
 
         static constexpr float baseMs[4] = { 23.7f, 31.3f, 41.9f, 53.1f };
-        float scale = (decaySeconds > 1.2f) ? 1.65f : 0.78f;
         for (int i = 0; i < 4; ++i) {
-            int len = std::max(32, static_cast<int>(sr_ * baseMs[i] * scale * 0.001f));
-            lines_[i].assign(static_cast<size_t>(len), 0.0f);
+            int maxLen = std::max(64, static_cast<int>(sr_ * baseMs[i] * 2.4f * 0.001f));
+            lines_[i].assign(static_cast<size_t>(maxLen), 0.0f);
+            activeLen_[i] = std::max(32, static_cast<int>(sr_ * baseMs[i] * 1.1f * 0.001f));
             idx_[i] = 0;
             dampState_[i] = 0.0f;
-            float rt = std::max(0.15f, decaySeconds);
-            fb_[i] = std::pow(10.0f, (-3.0f * (static_cast<float>(len) / sr_)) / rt);
-            fb_[i] = std::clamp(fb_[i], 0.20f, 0.965f);
         }
-        dampCoeff_ = std::clamp(1.0f - (lpHz / (sr_ * 0.5f)), 0.15f, 0.85f);
-        hpL_.setHighPass(sr_, hpHz); hpR_.setHighPass(sr_, hpHz);
-        lpL_.setLowPass(sr_, lpHz);  lpR_.setLowPass(sr_, lpHz);
+        configure(preDelayMs, decaySeconds, 0.65f, hpHz, lpHz);
         hpL_.reset(); hpR_.reset(); lpL_.reset(); lpR_.reset();
     }
 
+    void configure(float preDelayMs, float decaySeconds, float size01, float hpHz, float lpHz) {
+        preDelaySamples_ = std::clamp(static_cast<int>(sr_ * preDelayMs * 0.001f), 1, maxPreSamples_ - 1);
+        static constexpr float baseMs[4] = { 23.7f, 31.3f, 41.9f, 53.1f };
+        float sizeScale = 0.45f + std::clamp(size01, 0.0f, 1.0f) * 1.65f;
+        float rt = std::max(0.15f, decaySeconds);
+        for (int i = 0; i < 4; ++i) {
+            int maxL = static_cast<int>(lines_[i].size());
+            int len = std::clamp(static_cast<int>(sr_ * baseMs[i] * sizeScale * 0.001f), 32, maxL);
+            activeLen_[i] = len;
+            if (idx_[i] >= len) idx_[i] = 0;
+            fb_[i] = std::clamp(std::pow(10.0f, (-3.0f * (static_cast<float>(len) / sr_)) / rt), 0.15f, 0.968f);
+        }
+        dampCoeff_ = std::clamp(1.0f - (lpHz / (sr_ * 0.5f)), 0.12f, 0.88f);
+        if (std::fabs(hpHz - lastHp_) > 1.0f) { hpL_.setHighPass(sr_, hpHz); hpR_.setHighPass(sr_, hpHz); lastHp_ = hpHz; }
+        if (std::fabs(lpHz - lastLp_) > 5.0f) { lpL_.setLowPass(sr_, lpHz);  lpR_.setLowPass(sr_, lpHz);  lastLp_ = lpHz; }
+    }
+
     inline void process(float inL, float inR, float& outL, float& outR) {
-        float pdL = preBufL_[preIdx_];
-        float pdR = preBufR_[preIdx_];
+        int readIdx = preIdx_ - preDelaySamples_;
+        if (readIdx < 0) readIdx += maxPreSamples_;
+        float pdL = preBufL_[readIdx];
+        float pdR = preBufR_[readIdx];
         preBufL_[preIdx_] = inL;
         preBufR_[preIdx_] = inR;
-        if (++preIdx_ >= preDelaySamples_) preIdx_ = 0;
+        if (++preIdx_ >= maxPreSamples_) preIdx_ = 0;
 
         float d[4];
         for (int i = 0; i < 4; ++i) {
@@ -133,7 +171,7 @@ public:
         float inVals[4] = { h0 + pdL * 0.65f, h1 + pdR * 0.65f, h2 + pdL * 0.45f, h3 - pdR * 0.45f };
         for (int i = 0; i < 4; ++i) {
             lines_[i][idx_[i]] = inVals[i];
-            if (++idx_[i] >= static_cast<int>(lines_[i].size())) idx_[i] = 0;
+            if (++idx_[i] >= activeLen_[i]) idx_[i] = 0;
         }
 
         outL = lpL_.process(hpL_.process(0.85f * (d[0] + d[2])));
@@ -142,15 +180,78 @@ public:
 
 private:
     float sr_ = 44100.0f;
+    int maxPreSamples_ = 11025;
     int preDelaySamples_ = 352;
     int preIdx_ = 0;
     std::vector<float> preBufL_, preBufR_;
     std::array<std::vector<float>, 4> lines_;
+    std::array<int, 4> activeLen_{{100,100,100,100}};
     std::array<int, 4> idx_{{0,0,0,0}};
     std::array<float, 4> fb_{{0.5f,0.5f,0.5f,0.5f}};
     std::array<float, 4> dampState_{{0,0,0,0}};
     float dampCoeff_ = 0.4f;
+    float lastHp_ = -1.0f, lastLp_ = -1.0f;
     Biquad hpL_, hpR_, lpL_, lpR_;
+};
+
+class StereoDelayBus {
+public:
+    void prepare(float sr) {
+        sr_ = std::max(8000.0f, sr);
+        maxSamples_ = static_cast<int>(sr_ * 1.2f);
+        bufL_.assign(static_cast<size_t>(maxSamples_), 0.0f);
+        bufR_.assign(static_cast<size_t>(maxSamples_), 0.0f);
+        writeIdx_ = 0;
+        hpL_.setHighPass(sr_, 130.0f); hpR_.setHighPass(sr_, 130.0f);
+        lpL_.setLowPass(sr_, 6500.0f); lpR_.setLowPass(sr_, 6500.0f);
+        hpL_.reset(); hpR_.reset(); lpL_.reset(); lpR_.reset();
+    }
+
+    inline void process(float inL, float inR, bool vintage, float timeMs, float feedback, float tone01, float width01, float mix01) {
+        int delaySamp = std::clamp(static_cast<int>(sr_ * timeMs * 0.001f), 8, maxSamples_ - 2);
+        int readL = writeIdx_ - delaySamp;
+        if (readL < 0) readL += maxSamples_;
+        int readR = writeIdx_ - static_cast<int>(delaySamp * (0.85f + 0.15f * (1.0f - width01)));
+        if (readR < 0) readR += maxSamples_;
+
+        float dL = bufL_[readL];
+        float dR = bufR_[readR];
+
+        float cutHz = 1200.0f + tone01 * 13000.0f;
+        if (std::fabs(cutHz - lastCut_) > 25.0f) {
+            lpL_.setLowPass(sr_, cutHz); lpR_.setLowPass(sr_, cutHz); lastCut_ = cutHz;
+        }
+        dL = lpL_.process(hpL_.process(dL));
+        dR = lpR_.process(hpR_.process(dR));
+        if (vintage) {
+            dL = fastTanh(dL * 1.45f) * 0.85f;
+            dR = fastTanh(dR * 1.45f) * 0.85f;
+        }
+
+        float fb = std::clamp(feedback, 0.0f, 0.88f);
+        float cross = width01 * 0.65f;
+        float nextL = inL + fb * (dL * (1.0f - cross) + dR * cross);
+        float nextR = inR + fb * (dR * (1.0f - cross) + dL * cross);
+
+        bufL_[writeIdx_] = nextL;
+        bufR_[writeIdx_] = nextR;
+        if (++writeIdx_ >= maxSamples_) writeIdx_ = 0;
+
+        inL_ = inL * (1.0f - mix01 * 0.4f) + dL * mix01;
+        inR_ = inR * (1.0f - mix01 * 0.4f) + dR * mix01;
+    }
+
+    float outL() const { return inL_; }
+    float outR() const { return inR_; }
+
+private:
+    float sr_ = 44100.0f;
+    int maxSamples_ = 48000;
+    int writeIdx_ = 0;
+    std::vector<float> bufL_, bufR_;
+    Biquad hpL_, hpR_, lpL_, lpR_;
+    float lastCut_ = -1.0f;
+    float inL_ = 0.0f, inR_ = 0.0f;
 };
 
 class SubBassBus {
@@ -168,12 +269,60 @@ public:
         float boosted = subPeak_.process(sub);
         float shaped = fastTanh(boosted * 1.45f) * 0.92f;
         shaped = dc_.process(shaped);
-        outL = shaped;
-        outR = shaped;
+        outL = shaped; outR = shaped;
     }
 private:
     Biquad lp1_, lp2_, subPeak_;
     DCBlocker dc_;
+};
+
+struct MasterFxParams {
+    bool  filterOn = false;
+    int   filterType = 0; // 0:LP24, 1:LP12, 2:HP24, 3:HP12, 4:BP12, 5:BP24, 6:Peak, 7:Notch
+    float filterCutoffHz = 12000.0f;
+    float filterRes = 0.15f;
+
+    bool  eqOn = false;
+    float eqLowFreq = 90.0f,  eqLowGain = 0.0f;
+    float eqMidFreq = 1100.0f, eqMidGain = 0.0f;
+    float eqHighFreq = 7500.0f, eqHighGain = 0.0f;
+
+    bool  compOn = false;
+    float compThreshDb = -14.0f;
+    float compRatio = 4.0f;
+    float compAttackMs = 10.0f;
+    float compReleaseMs = 110.0f;
+    float compKneeDb = 4.0f;
+    float compMakeupDb = 1.5f;
+
+    bool  satOn = false;
+    float satDrive = 0.25f;
+    float satWarmth = 0.50f;
+    float satMix = 0.50f;
+
+    bool  delayOn = false;
+    int   delayMode = 0; // 0:Modern, 1:Vintage
+    float delayTimeMs = 240.0f;
+    float delayFeedback = 0.32f;
+    float delayTone = 0.65f;
+    float delayWidth = 0.70f;
+    float delayMix = 0.22f;
+
+    bool  revOn = false;
+    int   revMode = 2; // 0:Room, 1:Plate, 2:Hall
+    float revPreDelayMs = 18.0f;
+    float revDecaySec = 2.2f;
+    float revSize = 0.65f;
+    float revLowCutHz = 140.0f;
+    float revHighCutHz = 7500.0f;
+    float revMix = 0.24f;
+
+    bool  limiterOn = true;
+    bool  monoBass = true;
+
+    bool  punishOn = true;
+    float punishAmount = 0.30f;
+    PunishMode punishMode = PunishMode::HurtMePlenty;
 };
 
 class MasterFxRack {
@@ -182,101 +331,136 @@ public:
         sr_ = std::max(8000.0f, sr);
         dcL_.setSampleRate(sr_); dcR_.setSampleRate(sr_);
         monoBassL_.setLowPass(sr_, 120.0f); monoBassR_.setLowPass(sr_, 120.0f);
-        fastAtt_ = std::exp(-1.0f / (sr_ * 0.002f));
-        fastRel_ = std::exp(-1.0f / (sr_ * 0.035f));
-        slowAtt_ = std::exp(-1.0f / (sr_ * 0.025f));
-        slowRel_ = std::exp(-1.0f / (sr_ * 0.140f));
-        compAtt_ = std::exp(-1.0f / (sr_ * 0.008f));
-        compRel_ = std::exp(-1.0f / (sr_ * 0.095f));
-        limRel_  = std::exp(-1.0f / (sr_ * 0.045f));
-        updateFilters(20.0f, 20000.0f, 0.0f, 0.0f, 0.0f);
+        delayBus_.prepare(sr_);
+        masterRevBus_.prepare(sr_, 18.0f, 2.2f, 140.0f, 7500.0f);
+        limRel_ = std::exp(-1.0f / (sr_ * 0.045f));
+        lastFiltHash_ = -1.0f;
+        lastEqHash_ = -1.0f;
     }
 
-    void updateFilters(float hpfHz, float lpfHz, float lowDb, float midDb, float highDb) {
-        if (std::fabs(hpfHz - lastHpf_) > 0.5f) {
-            hpfL_.setHighPass(sr_, hpfHz); hpfR_.setHighPass(sr_, hpfHz); lastHpf_ = hpfHz;
+    inline void process(float& l, float& r, const MasterFxParams& p) {
+        // 1. FILTER (FabFilter Volcano/Simplon style multi-mode)
+        if (p.filterOn) {
+            float fHash = p.filterCutoffHz + p.filterRes * 100000.0f + p.filterType * 1000000.0f;
+            if (std::fabs(fHash - lastFiltHash_) > 0.1f) {
+                lastFiltHash_ = fHash;
+                float q = 0.707f + p.filterRes * 7.5f;
+                switch (p.filterType) {
+                    case 0: case 1:
+                        flt1L_.setLowPass(sr_, p.filterCutoffHz, q); flt1R_.setLowPass(sr_, p.filterCutoffHz, q);
+                        flt2L_.setLowPass(sr_, p.filterCutoffHz, 0.707f); flt2R_.setLowPass(sr_, p.filterCutoffHz, 0.707f);
+                        break;
+                    case 2: case 3:
+                        flt1L_.setHighPass(sr_, p.filterCutoffHz, q); flt1R_.setHighPass(sr_, p.filterCutoffHz, q);
+                        flt2L_.setHighPass(sr_, p.filterCutoffHz, 0.707f); flt2R_.setHighPass(sr_, p.filterCutoffHz, 0.707f);
+                        break;
+                    case 4: case 5:
+                        flt1L_.setBandPass(sr_, p.filterCutoffHz, q); flt1R_.setBandPass(sr_, p.filterCutoffHz, q);
+                        flt2L_.setBandPass(sr_, p.filterCutoffHz, 1.0f); flt2R_.setBandPass(sr_, p.filterCutoffHz, 1.0f);
+                        break;
+                    case 6:
+                        flt1L_.setPeaking(sr_, p.filterCutoffHz, q, 6.0f + p.filterRes * 10.0f);
+                        flt1R_.setPeaking(sr_, p.filterCutoffHz, q, 6.0f + p.filterRes * 10.0f);
+                        break;
+                    case 7:
+                        flt1L_.setNotch(sr_, p.filterCutoffHz, q);
+                        flt1R_.setNotch(sr_, p.filterCutoffHz, q);
+                        break;
+                }
+            }
+            l = flt1L_.process(l); r = flt1R_.process(r);
+            if (p.filterType == 0 || p.filterType == 2 || p.filterType == 5) {
+                l = flt2L_.process(l); r = flt2R_.process(r);
+            }
         }
-        if (std::fabs(lpfHz - lastLpf_) > 5.0f) {
-            lpfL_.setLowPass(sr_, lpfHz); lpfR_.setLowPass(sr_, lpfHz); lastLpf_ = lpfHz;
-        }
-        if (std::fabs(lowDb - lastLow_) > 0.05f) {
-            eqLowL_.setPeaking(sr_, 90.0f, 0.8f, lowDb); eqLowR_.setPeaking(sr_, 90.0f, 0.8f, lowDb); lastLow_ = lowDb;
-        }
-        if (std::fabs(midDb - lastMid_) > 0.05f) {
-            eqMidL_.setPeaking(sr_, 1100.0f, 0.9f, midDb); eqMidR_.setPeaking(sr_, 1100.0f, 0.9f, midDb); lastMid_ = midDb;
-        }
-        if (std::fabs(highDb - lastHigh_) > 0.05f) {
-            eqHighL_.setPeaking(sr_, 7500.0f, 0.8f, highDb); eqHighR_.setPeaking(sr_, 7500.0f, 0.8f, highDb); lastHigh_ = highDb;
-        }
-    }
 
-    inline void process(float& l, float& r,
-                        bool filterOn, bool eqOn, bool compOn, bool transientOn, bool punishOn,
-                        float compAmt, float transientPunch, float stereoWidth, bool monoBass,
-                        float punishAmt, PunishMode punishMode, bool limiterOn, float outGain) {
-        if (filterOn) {
-            l = lpfL_.process(hpfL_.process(l));
-            r = lpfR_.process(hpfR_.process(r));
-        }
-        if (eqOn) {
+        // 2. EQ (FabFilter Pro-Q style 3-band)
+        if (p.eqOn) {
+            float eqHash = p.eqLowFreq + p.eqLowGain * 100.0f + p.eqMidFreq + p.eqMidGain * 200.0f + p.eqHighFreq + p.eqHighGain * 300.0f;
+            if (std::fabs(eqHash - lastEqHash_) > 0.05f) {
+                lastEqHash_ = eqHash;
+                eqLowL_.setPeaking(sr_, p.eqLowFreq, 0.8f, p.eqLowGain);
+                eqLowR_.setPeaking(sr_, p.eqLowFreq, 0.8f, p.eqLowGain);
+                eqMidL_.setPeaking(sr_, p.eqMidFreq, 0.9f, p.eqMidGain);
+                eqMidR_.setPeaking(sr_, p.eqMidFreq, 0.9f, p.eqMidGain);
+                eqHighL_.setPeaking(sr_, p.eqHighFreq, 0.8f, p.eqHighGain);
+                eqHighR_.setPeaking(sr_, p.eqHighFreq, 0.8f, p.eqHighGain);
+            }
             l = eqHighL_.process(eqMidL_.process(eqLowL_.process(l)));
             r = eqHighR_.process(eqMidR_.process(eqLowR_.process(r)));
         }
 
-        if (transientOn) {
-            float punchDelta = (transientPunch - 0.5f) * 2.0f;
-            if (std::fabs(punchDelta) > 0.01f) {
-                float det = std::max(std::fabs(l), std::fabs(r));
-                envFast_ = (det > envFast_) ? (fastAtt_ * envFast_ + (1.0f - fastAtt_) * det)
-                                            : (fastRel_ * envFast_ + (1.0f - fastRel_) * det);
-                envSlow_ = (det > envSlow_) ? (slowAtt_ * envSlow_ + (1.0f - slowAtt_) * det)
-                                            : (slowRel_ * envSlow_ + (1.0f - slowRel_) * det);
-                float trans = std::max(0.0f, envFast_ - envSlow_);
-                float gain = std::clamp(1.0f + punchDelta * trans * 3.2f, 0.35f, 2.4f);
-                l *= gain; r *= gain;
-            }
-        }
-
-        if (compOn && compAmt > 0.01f) {
+        // 3. COMP (FabFilter Pro-C style with Thresh, Ratio, Attack, Release, Knee, Makeup)
+        if (p.compOn) {
+            float att = std::exp(-1.0f / (sr_ * std::max(0.5f, p.compAttackMs) * 0.001f));
+            float rel = std::exp(-1.0f / (sr_ * std::max(10.0f, p.compReleaseMs) * 0.001f));
             float det = std::max(std::fabs(l), std::fabs(r));
-            compEnv_ = (det > compEnv_) ? (compAtt_ * compEnv_ + (1.0f - compAtt_) * det)
-                                        : (compRel_ * compEnv_ + (1.0f - compRel_) * det);
-            float thresh = 0.85f - compAmt * 0.65f;
-            float gr = 1.0f;
-            if (compEnv_ > thresh) {
-                float over = compEnv_ - thresh;
-                gr = (thresh + over * (1.0f - compAmt * 0.72f)) / std::max(1e-6f, compEnv_);
+            compEnv_ = (det > compEnv_) ? (att * compEnv_ + (1.0f - att) * det)
+                                        : (rel * compEnv_ + (1.0f - rel) * det);
+            float envDb = 20.0f * std::log10(std::max(1e-6f, compEnv_));
+            float overDb = envDb - p.compThreshDb;
+            float grDb = 0.0f;
+            float halfKnee = p.compKneeDb * 0.5f;
+            if (overDb > -halfKnee) {
+                float effOver = (p.compKneeDb > 0.1f && overDb < halfKnee)
+                    ? ((overDb + halfKnee) * (overDb + halfKnee) / (2.0f * p.compKneeDb))
+                    : overDb;
+                grDb = effOver * (1.0f - 1.0f / std::max(1.0f, p.compRatio));
             }
-            float makeup = 1.0f + compAmt * 0.55f;
-            l *= gr * makeup; r *= gr * makeup;
+            float totalGain = std::pow(10.0f, (-grDb + p.compMakeupDb) / 20.0f);
+            l *= totalGain; r *= totalGain;
         }
 
-        float w = (stereoWidth <= 0.5f) ? (stereoWidth * 2.0f) : (1.0f + (stereoWidth - 0.5f));
-        if (monoBass) {
+        // 4. SAT (FabFilter Saturn style Drive + Warmth + Mix)
+        if (p.satOn && p.satMix > 0.005f) {
+            float drv = 1.0f + p.satDrive * 7.5f;
+            float warmTilt = (p.satWarmth - 0.5f) * 6.0f;
+            if (std::fabs(warmTilt - lastWarmth_) > 0.1f) {
+                satWarmL_.setPeaking(sr_, 160.0f, 0.7f, warmTilt);
+                satWarmR_.setPeaking(sr_, 160.0f, 0.7f, warmTilt);
+                lastWarmth_ = warmTilt;
+            }
+            float wL = satWarmL_.process(l);
+            float wR = satWarmR_.process(r);
+            float sL = fastTanh(wL * drv) / (1.0f + 0.35f * (drv - 1.0f));
+            float sR = fastTanh(wR * drv) / (1.0f + 0.35f * (drv - 1.0f));
+            l = l * (1.0f - p.satMix) + sL * p.satMix;
+            r = r * (1.0f - p.satMix) + sR * p.satMix;
+        }
+
+        // 5. DELAY (ValhallaDelay Modern/Vintage)
+        if (p.delayOn && p.delayMix > 0.005f) {
+            delayBus_.process(l, r, p.delayMode == 1, p.delayTimeMs, p.delayFeedback, p.delayTone, p.delayWidth, p.delayMix);
+            l = delayBus_.outL(); r = delayBus_.outR();
+        }
+
+        // 6. REVERB (ValhallaVintageVerb 3D Space)
+        if (p.revOn && p.revMix > 0.005f) {
+            float modeScale = (p.revMode == 0) ? 0.55f : ((p.revMode == 1) ? 0.85f : 1.25f);
+            masterRevBus_.configure(p.revPreDelayMs, p.revDecaySec * modeScale, p.revSize, p.revLowCutHz, p.revHighCutHz);
+            float rL = 0.0f, rR = 0.0f;
+            masterRevBus_.process(l, r, rL, rR);
+            l = l * (1.0f - p.revMix * 0.35f) + rL * p.revMix;
+            r = r * (1.0f - p.revMix * 0.35f) + rR * p.revMix;
+        }
+
+        // 7. MONO BASS
+        if (p.monoBass) {
             float lowL = monoBassL_.process(l), lowR = monoBassR_.process(r);
             float lowMono = 0.5f * (lowL + lowR);
-            float hiL = l - lowL, hiR = r - lowR;
-            float mid = 0.5f * (hiL + hiR), side = 0.5f * (hiL - hiR) * w;
-            l = lowMono + mid + side;
-            r = lowMono + mid - side;
-        } else {
-            float mid = 0.5f * (l + r), side = 0.5f * (l - r) * w;
-            l = mid + side; r = mid - side;
+            l = lowMono + (l - lowL);
+            r = lowMono + (r - lowR);
         }
 
-        if (punishOn && punishAmt > 0.005f) {
-            float drive = 1.0f;
-            float asym = 0.0f;
-            float wetMix = punishAmt;
-            if (punishMode == PunishMode::GentlyNow) {
-                drive = 1.0f + punishAmt * 2.2f;
-                asym = 0.02f;
-            } else if (punishMode == PunishMode::HurtMePlenty) {
-                drive = 1.0f + punishAmt * 5.5f;
-                asym = 0.07f;
+        // 8. SIGNATURE PUNISH BAR
+        if (p.punishOn && p.punishAmount > 0.005f) {
+            float drive = 1.0f, asym = 0.0f, wetMix = p.punishAmount;
+            if (p.punishMode == PunishMode::GentlyNow) {
+                drive = 1.0f + p.punishAmount * 2.2f; asym = 0.02f;
+            } else if (p.punishMode == PunishMode::HurtMePlenty) {
+                drive = 1.0f + p.punishAmount * 5.5f; asym = 0.07f;
             } else {
-                drive = 1.0f + punishAmt * 11.5f;
-                asym = 0.14f;
+                drive = 1.0f + p.punishAmount * 11.5f; asym = 0.14f;
             }
             float satL = dcL_.process(fastTanh(l * drive + asym) - fastTanh(asym));
             float satR = dcR_.process(fastTanh(r * drive + asym) - fastTanh(asym));
@@ -285,8 +469,8 @@ public:
             r = r * (1.0f - wetMix * 0.85f) + satR * (wetMix * 1.15f * compNorm + 0.15f);
         }
 
-        l *= outGain; r *= outGain;
-        if (limiterOn) {
+        // 9. OUTPUT LIMITER
+        if (p.limiterOn) {
             constexpr float ceil = 0.966f;
             float pk = std::max(std::fabs(l), std::fabs(r));
             float target = (pk > ceil) ? (ceil / pk) : 1.0f;
@@ -298,13 +482,15 @@ public:
 
 private:
     float sr_ = 44100.0f;
-    float lastHpf_ = -1.0f, lastLpf_ = -1.0f, lastLow_ = -99.0f, lastMid_ = -99.0f, lastHigh_ = -99.0f;
-    Biquad hpfL_, hpfR_, lpfL_, lpfR_, eqLowL_, eqLowR_, eqMidL_, eqMidR_, eqHighL_, eqHighR_;
+    float lastFiltHash_ = -1.0f, lastEqHash_ = -1.0f, lastWarmth_ = -99.0f;
+    Biquad flt1L_, flt1R_, flt2L_, flt2R_;
+    Biquad eqLowL_, eqLowR_, eqMidL_, eqMidR_, eqHighL_, eqHighR_;
+    Biquad satWarmL_, satWarmR_;
     Biquad monoBassL_, monoBassR_;
     DCBlocker dcL_, dcR_;
-    float fastAtt_ = 0.9f, fastRel_ = 0.99f, slowAtt_ = 0.98f, slowRel_ = 0.999f;
-    float envFast_ = 0.0f, envSlow_ = 0.0f;
-    float compAtt_ = 0.95f, compRel_ = 0.998f, compEnv_ = 0.0f;
+    StereoDelayBus delayBus_;
+    StereoSpaceBus masterRevBus_;
+    float compEnv_ = 0.0f;
     float limRel_ = 0.995f, limGain_ = 1.0f;
 };
 
