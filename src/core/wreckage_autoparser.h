@@ -54,9 +54,7 @@ public:
         }
 
         std::string clean = stem;
-        auto cut = clean.find_first_of("_-");
-        if (cut != std::string::npos && cut >= 2) clean = clean.substr(0, cut);
-        if (clean.size() > 14) clean = clean.substr(0, 14);
+        if (clean.size() > 16) clean = clean.substr(0, 16);
         meta.cleanInstrumentName = clean;
         return meta;
     }

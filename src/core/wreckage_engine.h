@@ -17,13 +17,13 @@
 namespace NoiseMu6ix {
 
 struct MultiMicSample {
-    std::array<std::shared_ptr<AudioBuffer>, 4> mics; // 0:Close, 1:Room, 2:Hall, 3:Sub
-    float startNorm   = 0.0f; // 0.0 .. 1.0
-    float endNorm     = 1.0f; // 0.0 .. 1.0
-    float fadeInNorm  = 0.0f; // 0.0 .. 0.5
-    float fadeOutNorm = 0.0f; // 0.0 .. 0.5
-    float velMin      = 0.0f; // 0.0 .. 1.0
-    float velMax      = 1.0f; // 0.0 .. 1.0
+    std::array<std::shared_ptr<AudioBuffer>, 4> mics;
+    float startNorm   = 0.0f;
+    float endNorm     = 1.0f;
+    float fadeInNorm  = 0.0f;
+    float fadeOutNorm = 0.0f;
+    float velMin      = 0.0f;
+    float velMax      = 1.0f;
 
     bool hasMic(MicBus m) const {
         auto idx = static_cast<size_t>(m);
@@ -50,7 +50,7 @@ struct SlotConfig {
     uint32_t keyColor = 0;
     bool hasCustomColor = false;
 
-    float gain = 0.80f; // Default 80%
+    float gain = 0.80f;
     float pitchSemitones = 0.0f;
     float toneLowDb = 0.0f;
     float toneHighDb = 0.0f;
@@ -62,11 +62,9 @@ struct SlotConfig {
     bool reverse = false;
     bool purged = false;
 
-    // Default (0.0, 0.0) Center Front on Stage
     float stageX = 0.0f;
     float stageY = 0.0f;
 
-    // RR-primary sample list (each entry holds 4 mics + Start/End/FadeIn/FadeOut + Vel range)
     std::vector<MultiMicSample> items;
     int lastRRIdx = -1;
     int fakeRRStep = 0;
@@ -140,8 +138,8 @@ struct EngineParams {
     MasterFxParams fx;
     VelocityCurve velCurve = VelocityCurve::Linear;
 
-    int themeIndex = 0; // Default 0 = PAPER SKETCH
-    int zoomIndex  = 2; // Default 2 = 100%
+    int themeIndex = 0;
+    int zoomIndex  = 2;
 };
 
 struct ProcessBuffers {
@@ -220,6 +218,7 @@ public:
     const SlotConfig& slot(int idx) const { return slots_[std::clamp(idx, 0, kTotalSlots - 1)]; }
 
     int activeVoiceCount() const { return activeVoices_.load(std::memory_order_relaxed); }
+    float currentGrDb() const { return masterFx_.currentGrDb(); }
 
     uint64_t totalSampleRamBytes() const {
         uint64_t bytes = 0;
@@ -246,7 +245,6 @@ public:
         activeVoices_.store(0, std::memory_order_relaxed);
     }
 
-    // RR-primary load: each dropped/loaded WAV appends as a new Round-Robin item unless explicit mic matches an existing item
     bool loadSampleIntoSlot(int slotIdx, const std::filesystem::path& filePath) {
         auto buf = std::make_shared<AudioBuffer>();
         if (!WavLoader::loadFromFile(filePath, *buf)) return false;
@@ -466,7 +464,6 @@ public:
                     if (v.envVal <= 0.0f) { v.active = false; continue; }
                 }
 
-                // Wave Editor Start / End / Fade-In / Fade-Out region envelope
                 double regionLen = std::max(8.0, v.endFrame - v.startFrame);
                 double relPos = v.playPos - v.startFrame;
                 if (relPos < 0.0 || relPos >= regionLen) {
@@ -637,7 +634,6 @@ private:
         }
         if (!target) return;
 
-        // Collect items matching velocity range (if user adjusted Key Mapping grid)
         std::vector<int> candidates;
         for (int i = 0; i < static_cast<int>(s.items.size()); ++i) {
             if (vel >= s.items[static_cast<size_t>(i)].velMin - 0.01f &&
@@ -665,7 +661,6 @@ private:
         auto prim = mm.primarySource();
         if (!prim) return;
 
-        // Global Fake RR / Fake Vel / Fake Mic controls
         float rrStrength  = params_.globalFakeRR  ? ((candidates.size() <= 2) ? 1.0f : 0.45f) : 0.0f;
         float velStrength = params_.globalFakeVel ? 1.0f : 0.0f;
         bool enableFakeMics = params_.globalFakeMic;
@@ -710,7 +705,6 @@ private:
             v.toneLowL.reset(); v.toneLowR.reset(); v.toneHiL.reset(); v.toneHiR.reset();
         }
 
-        // Natural non-detuning Fake RR (micro start offset + formant/tone variation, tiny 3-cent max pitch shift)
         static constexpr float kStartMs[6]    = { 0.0f, 1.1f, 2.3f, 0.5f, 1.8f, 3.0f };
         static constexpr float kFormantHz[6]  = { 320.0f, 540.0f, 760.0f, 430.0f, 920.0f, 620.0f };
         static constexpr float kFormantDb[6]  = { 1.8f, -1.6f, 1.5f, -1.2f, 1.3f, -1.7f };

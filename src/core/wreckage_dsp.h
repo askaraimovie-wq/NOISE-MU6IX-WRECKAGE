@@ -115,7 +115,6 @@ public:
         maxPreSamples_ = std::max(4, static_cast<int>(sr_ * 0.25f));
         preBufL_.assign(static_cast<size_t>(maxPreSamples_), 0.0f);
         preBufR_.assign(static_cast<size_t>(maxPreSamples_), 0.0f);
-        preDelaySamples_ = std::clamp(static_cast<int>(sr_ * preDelayMs * 0.001f), 1, maxPreSamples_ - 1);
         preIdx_ = 0;
 
         static constexpr float baseMs[4] = { 23.7f, 31.3f, 41.9f, 53.1f };
@@ -278,7 +277,7 @@ private:
 
 struct MasterFxParams {
     bool  filterOn = false;
-    int   filterType = 0; // 0:LP24, 1:LP12, 2:HP24, 3:HP12, 4:BP12, 5:BP24, 6:Peak, 7:Notch
+    int   filterType = 0;
     float filterCutoffHz = 12000.0f;
     float filterRes = 0.15f;
 
@@ -293,15 +292,15 @@ struct MasterFxParams {
     float compAttackMs = 10.0f;
     float compReleaseMs = 110.0f;
     float compKneeDb = 4.0f;
-    float compMakeupDb = 1.5f;
+    float compMakeupDb = 0.0f; // Default 0.0 dB
 
     bool  satOn = false;
     float satDrive = 0.25f;
     float satWarmth = 0.50f;
-    float satMix = 0.50f;
+    float satMix = 0.0f; // Default 0.0 (100% Dry / 0% Wet)
 
     bool  delayOn = false;
-    int   delayMode = 0; // 0:Modern, 1:Vintage
+    int   delayMode = 0;
     float delayTimeMs = 240.0f;
     float delayFeedback = 0.32f;
     float delayTone = 0.65f;
@@ -309,7 +308,7 @@ struct MasterFxParams {
     float delayMix = 0.22f;
 
     bool  revOn = false;
-    int   revMode = 2; // 0:Room, 1:Plate, 2:Hall
+    int   revMode = 2;
     float revPreDelayMs = 18.0f;
     float revDecaySec = 2.2f;
     float revSize = 0.65f;
@@ -338,8 +337,9 @@ public:
         lastEqHash_ = -1.0f;
     }
 
+    float currentGrDb() const { return lastGrDb_; }
+
     inline void process(float& l, float& r, const MasterFxParams& p) {
-        // 1. FILTER (FabFilter Volcano/Simplon style multi-mode)
         if (p.filterOn) {
             float fHash = p.filterCutoffHz + p.filterRes * 100000.0f + p.filterType * 1000000.0f;
             if (std::fabs(fHash - lastFiltHash_) > 0.1f) {
@@ -374,7 +374,6 @@ public:
             }
         }
 
-        // 2. EQ (FabFilter Pro-Q style 3-band)
         if (p.eqOn) {
             float eqHash = p.eqLowFreq + p.eqLowGain * 100.0f + p.eqMidFreq + p.eqMidGain * 200.0f + p.eqHighFreq + p.eqHighGain * 300.0f;
             if (std::fabs(eqHash - lastEqHash_) > 0.05f) {
@@ -390,7 +389,6 @@ public:
             r = eqHighR_.process(eqMidR_.process(eqLowR_.process(r)));
         }
 
-        // 3. COMP (FabFilter Pro-C style with Thresh, Ratio, Attack, Release, Knee, Makeup)
         if (p.compOn) {
             float att = std::exp(-1.0f / (sr_ * std::max(0.5f, p.compAttackMs) * 0.001f));
             float rel = std::exp(-1.0f / (sr_ * std::max(10.0f, p.compReleaseMs) * 0.001f));
@@ -407,11 +405,13 @@ public:
                     : overDb;
                 grDb = effOver * (1.0f - 1.0f / std::max(1.0f, p.compRatio));
             }
+            lastGrDb_ = grDb;
             float totalGain = std::pow(10.0f, (-grDb + p.compMakeupDb) / 20.0f);
             l *= totalGain; r *= totalGain;
+        } else {
+            lastGrDb_ = 0.0f;
         }
 
-        // 4. SAT (FabFilter Saturn style Drive + Warmth + Mix)
         if (p.satOn && p.satMix > 0.005f) {
             float drv = 1.0f + p.satDrive * 7.5f;
             float warmTilt = (p.satWarmth - 0.5f) * 6.0f;
@@ -428,13 +428,11 @@ public:
             r = r * (1.0f - p.satMix) + sR * p.satMix;
         }
 
-        // 5. DELAY (ValhallaDelay Modern/Vintage)
         if (p.delayOn && p.delayMix > 0.005f) {
             delayBus_.process(l, r, p.delayMode == 1, p.delayTimeMs, p.delayFeedback, p.delayTone, p.delayWidth, p.delayMix);
             l = delayBus_.outL(); r = delayBus_.outR();
         }
 
-        // 6. REVERB (ValhallaVintageVerb 3D Space)
         if (p.revOn && p.revMix > 0.005f) {
             float modeScale = (p.revMode == 0) ? 0.55f : ((p.revMode == 1) ? 0.85f : 1.25f);
             masterRevBus_.configure(p.revPreDelayMs, p.revDecaySec * modeScale, p.revSize, p.revLowCutHz, p.revHighCutHz);
@@ -444,7 +442,6 @@ public:
             r = r * (1.0f - p.revMix * 0.35f) + rR * p.revMix;
         }
 
-        // 7. MONO BASS
         if (p.monoBass) {
             float lowL = monoBassL_.process(l), lowR = monoBassR_.process(r);
             float lowMono = 0.5f * (lowL + lowR);
@@ -452,7 +449,6 @@ public:
             r = lowMono + (r - lowR);
         }
 
-        // 8. SIGNATURE PUNISH BAR
         if (p.punishOn && p.punishAmount > 0.005f) {
             float drive = 1.0f, asym = 0.0f, wetMix = p.punishAmount;
             if (p.punishMode == PunishMode::GentlyNow) {
@@ -469,7 +465,6 @@ public:
             r = r * (1.0f - wetMix * 0.85f) + satR * (wetMix * 1.15f * compNorm + 0.15f);
         }
 
-        // 9. OUTPUT LIMITER
         if (p.limiterOn) {
             constexpr float ceil = 0.966f;
             float pk = std::max(std::fabs(l), std::fabs(r));
@@ -483,6 +478,7 @@ public:
 private:
     float sr_ = 44100.0f;
     float lastFiltHash_ = -1.0f, lastEqHash_ = -1.0f, lastWarmth_ = -99.0f;
+    float lastGrDb_ = 0.0f;
     Biquad flt1L_, flt1R_, flt2L_, flt2R_;
     Biquad eqLowL_, eqLowR_, eqMidL_, eqMidR_, eqHighL_, eqHighR_;
     Biquad satWarmL_, satWarmR_;
