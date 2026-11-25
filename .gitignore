@@ -1,0 +1,9 @@
+build/
+out/
+third_party/
+*.vst3/
+*.user
+*.suo
+*.tmp
+.vs/
+.vscode/
