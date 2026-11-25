@@ -42,7 +42,6 @@ tresult PLUGIN_API WreckageController::initialize(FUnknown* context) {
         parameters.addParameter(title, nullptr, stepCount, defVal, ParameterInfo::kCanAutomate, id);
     };
 
-    // 5-Bus Mixer
     addRange(kParamBusCloseGain,   STR16("Bus Close"),        0.68);
     addRange(kParamBusRoomGain,    STR16("Bus Room"),         0.44);
     addRange(kParamBusHallGain,    STR16("Bus Hall"),         0.36);
@@ -54,7 +53,6 @@ tresult PLUGIN_API WreckageController::initialize(FUnknown* context) {
     addRange(kParamBusLfeBypass,   STR16("LFE Bypass"),       0.0, 1);
     addRange(kParamBusCrushBypass, STR16("Crush Bypass"),     0.0, 1);
 
-    // Master FX Rack
     addRange(kParamMasterHPF,      STR16("Master HPF"),       0.08);
     addRange(kParamMasterLPF,      STR16("Master LPF"),       0.98);
     addRange(kParamEqLow,          STR16("EQ Low"),           0.50);
@@ -68,11 +66,9 @@ tresult PLUGIN_API WreckageController::initialize(FUnknown* context) {
     addRange(kParamLimiterOn,      STR16("Output Limiter"),   1.0, 1);
     addRange(kParamMasterOutGain,  STR16("Master Output"),    0.76);
 
-    // PUNISH
     addRange(kParamPunishAmount,   STR16("PUNISH Amount"),    0.30);
     addRange(kParamPunishMode,     STR16("PUNISH Mode"),      0.5, 2);
 
-    // Global & UI Prefs
     addRange(kParamThemeIndex,       STR16("UI Theme"),         0.0, 9);
     addRange(kParamUiZoom,           STR16("UI Zoom"),          1.0, 2);
     addRange(kParamStageMasterDepth, STR16("Stage Depth"),      0.66);

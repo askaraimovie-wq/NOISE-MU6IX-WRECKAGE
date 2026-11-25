@@ -31,8 +31,6 @@ private:
     void broadcastSlotSummaryToUi(int slotIdx);
 
     WreckageEngine engine_;
-    std::string activeLibraryPathUtf8_;
-    std::string activePresetNameUtf8_ = "BUILT-IN EPIC KIT";
 };
 
 } // namespace NoiseMu6ix

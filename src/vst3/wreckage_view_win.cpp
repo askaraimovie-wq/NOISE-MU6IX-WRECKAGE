@@ -6,15 +6,21 @@
 #include <shellapi.h>
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 #include <filesystem>
 
-#include <cstring>
 using namespace Steinberg;
 using Steinberg::Vst::ParamID;
 
 namespace NoiseMu6ix {
 
 static const wchar_t* kWndClassName = L"NoiseMu6ixWreckageD2DViewClass";
+
+struct ComApartmentGuard {
+    HRESULT hr;
+    ComApartmentGuard() { hr = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED); }
+    ~ComApartmentGuard() { if (SUCCEEDED(hr)) CoUninitialize(); }
+};
 
 static std::wstring toWide(const std::string& s) {
     if (s.empty()) return L"";
@@ -28,11 +34,6 @@ WreckageWinView::WreckageWinView(WreckageController* controller)
     : CPluginView(nullptr), controller_(controller) {
     ViewRect r(0, 0, kBaseUiSize, kBaseUiSize);
     setRect(r);
-#if !WRECKAGE_IS_PLAYER
-    activeTab_ = 0; // Full WRECKAGE opens on SOURCE
-#else
-    activeTab_ = 1; // WRECKAGE Player opens on STAGE & MIXER (tab 0 is Read-Only KIT)
-#endif
 }
 
 WreckageWinView::~WreckageWinView() {
@@ -188,7 +189,6 @@ void WreckageWinView::paint() {
     drawPunishAndKeyboard(th);
     if (browserOpen_) drawLibraryBrowserOverlay(th);
 
-    // Outer frame border
     brush_->SetColor(toD2D(th.border));
     rt_->DrawRectangle(D2D1::RectF(1.0f, 1.0f, kBaseUiSize - 1.0f, kBaseUiSize - 1.0f), brush_, 2.0f);
 
@@ -203,11 +203,9 @@ void WreckageWinView::drawHeader(const ThemePalette& th) {
     brush_->SetColor(toD2D(th.border));
     rt_->DrawLine(D2D1::Point2F(0, 68), D2D1::Point2F(840, 68), brush_, 1.6f);
 
-    // Small Brand on Top + BIG Plugin Title Below
     drawText(L"NOISE MU6IX", 16, 6, 200, 16, th.textMuted, 10.5f, true);
     drawText(L"WRECKAGE", 16, 20, 220, 42, th.textPrimary, 29.0f, true);
 
-    // Preset + SET ROOT Box
     brush_->SetColor(toD2D(th.panelBg));
     rt_->FillRectangle(D2D1::RectF(230, 10, 560, 58), brush_);
     brush_->SetColor(toD2D(th.border));
@@ -219,7 +217,6 @@ void WreckageWinView::drawHeader(const ThemePalette& th) {
     std::wstring pName = toWide(controller_->activePresetName());
     drawText(pName.c_str(), 238, 30, 314, 24, th.textPrimary, 13.0f, true, DWRITE_TEXT_ALIGNMENT_CENTER);
 
-    // Theme 1/10 Switcher
     int thIdx = std::clamp(static_cast<int>(std::round(controller_->getParamNormalized(kParamThemeIndex) * 9.0)), 0, 9);
     brush_->SetColor(toD2D(th.panelBg));
     rt_->FillRectangle(D2D1::RectF(572, 10, 704, 58), brush_);
@@ -229,7 +226,6 @@ void WreckageWinView::drawHeader(const ThemePalette& th) {
     drawText(thNum.c_str(), 572, 13, 132, 16, th.textMuted, 9.5f, true, DWRITE_TEXT_ALIGNMENT_CENTER);
     drawText(toWide(th.name).c_str(), 572, 30, 132, 24, th.textPrimary, 10.5f, true, DWRITE_TEXT_ALIGNMENT_CENTER);
 
-    // Zoom Buttons: 50% / 75% / 100%
     int zIdx = std::clamp(static_cast<int>(std::round(controller_->getParamNormalized(kParamUiZoom) * 2.0)), 0, 2);
     const wchar_t* zLabels[3] = { L"50%", L"75%", L"100%" };
     for (int i = 0; i < 3; ++i) {
@@ -260,7 +256,6 @@ void WreckageWinView::drawTabs(const ThemePalette& th) {
 }
 
 void WreckageWinView::drawSourceOrKitTab(const ThemePalette& th) {
-    // Left Panel: 3-Octave 3x4 Pad Bank
     brush_->SetColor(toD2D(th.panelBg));
     rt_->FillRectangle(D2D1::RectF(16, 120, 412, 624), brush_);
     brush_->SetColor(toD2D(th.border));
@@ -298,7 +293,6 @@ void WreckageWinView::drawSourceOrKitTab(const ThemePalette& th) {
     }
 
 #if !WRECKAGE_IS_PLAYER
-    // Editor-only Load WAV + Export .nm6 buttons
     brush_->SetColor(toD2D(th.border));
     rt_->FillRectangle(D2D1::RectF(26, 568, 152, 608), brush_);
     drawText(L"+ LOAD WAV", 26, 568, 126, 40, th.panelBg, 11.0f, true, DWRITE_TEXT_ALIGNMENT_CENTER);
@@ -313,7 +307,6 @@ void WreckageWinView::drawSourceOrKitTab(const ThemePalette& th) {
     rt_->DrawRectangle(D2D1::RectF(298, 568, 402, 608), brush_, 1.2f);
     drawText(L"PURGE", 298, 568, 104, 40, th.textPrimary, 11.0f, true, DWRITE_TEXT_ALIGNMENT_CENTER);
 
-    // Right Panel: Sample Inspector (Read-only summary in Player, Full Edit in WRECKAGE)
     const auto& sl = controller_->slotMirror(selectedSlot_);
     brush_->SetColor(toD2D(th.panelBg));
     rt_->FillRectangle(D2D1::RectF(428, 120, 824, 624), brush_);
@@ -323,7 +316,6 @@ void WreckageWinView::drawSourceOrKitTab(const ThemePalette& th) {
     std::wstring hdr = L"INSPECTOR: " + toWide(sl.name);
     drawText(hdr.c_str(), 440, 128, 370, 24, th.textPrimary, 12.5f, true);
 
-    // Custom Key Color Swatches (12 studio colors)
     drawText(L"KEY COLOR:", 440, 158, 86, 20, th.textMuted, 10.0f, true);
     for (int c = 0; c < kNumKeyColors; ++c) {
         float sx = 528.0f + c * 23.0f;
@@ -333,7 +325,6 @@ void WreckageWinView::drawSourceOrKitTab(const ThemePalette& th) {
         rt_->DrawRectangle(D2D1::RectF(sx, 158, sx + 19, 178), brush_, (sl.hasCustomColor && sl.keyColor == kStudioKeyColors[c]) ? 2.4f : 1.0f);
     }
 
-    // 3-State Smart Hybrid Pills (AUTO / ON / OFF)
     const wchar_t* modeTxt[3] = { L"AUTO", L"ON", L"OFF" };
     std::wstring pills[3] = {
         std::wstring(L"RR: ")  + modeTxt[sl.rrMode % 3],
@@ -352,7 +343,6 @@ void WreckageWinView::drawSourceOrKitTab(const ThemePalette& th) {
         drawText(pills[p].c_str(), px, 194, 118, 32, fg, 11.0f, true, DWRITE_TEXT_ALIGNMENT_CENTER);
     }
 
-    // Drum Modes: ONE-SHOT/GATE, CHOKE, REV
     std::wstring m1 = sl.oneShot ? L"MODE: ONE-SHOT" : L"MODE: GATE";
     std::wstring m2 = sl.chokeGroup == 0 ? L"CHOKE: OFF" : (L"CHOKE: " + std::to_wstring(sl.chokeGroup));
     std::wstring m3 = sl.reverse ? L"REV: ON" : L"REV: OFF";
@@ -366,7 +356,6 @@ void WreckageWinView::drawSourceOrKitTab(const ThemePalette& th) {
         drawText(dModes[d], dx, 240, 118, 30, th.textPrimary, 10.0f, true, DWRITE_TEXT_ALIGNMENT_CENTER);
     }
 
-    // 5 Horizontal Slot Faders
     drawFader(440, 310, 368, 16, sl.gain,    L"GAIN",    th);
     drawFader(440, 368, 368, 16, sl.pitch,   L"PITCH (-24 / +24 ST)", th);
     drawFader(440, 426, 368, 16, sl.attack,  L"ATTACK",  th);
@@ -375,7 +364,6 @@ void WreckageWinView::drawSourceOrKitTab(const ThemePalette& th) {
 }
 
 void WreckageWinView::drawStageAndMixerTab(const ThemePalette& th) {
-    // Left: THE STAGE
     brush_->SetColor(toD2D(th.panelBg));
     rt_->FillRectangle(D2D1::RectF(16, 120, 412, 624), brush_);
     brush_->SetColor(toD2D(th.border));
@@ -388,7 +376,6 @@ void WreckageWinView::drawStageAndMixerTab(const ThemePalette& th) {
     brush_->SetColor(toD2D(th.border));
     rt_->DrawRectangle(stageBox, brush_, 1.5f);
 
-    // Stage Grid lines
     brush_->SetColor(toD2D(th.textMuted, 0.35f));
     for (int g = 1; g < 4; ++g) {
         float gx = 32.0f + g * (364.0f / 4.0f);
@@ -399,7 +386,6 @@ void WreckageWinView::drawStageAndMixerTab(const ThemePalette& th) {
     drawText(L"BACK (HALL / FAR)", 32, 166, 364, 18, th.textMuted, 10.0f, true, DWRITE_TEXT_ALIGNMENT_CENTER);
     drawText(L"FRONT (CLOSE / DRY)", 32, 576, 364, 18, th.textMuted, 10.0f, true, DWRITE_TEXT_ALIGNMENT_CENTER);
 
-    // Draw all loaded/active stage nodes
     for (int i = 0; i < 12; ++i) {
         int sIdx = activeBank_ * 12 + i;
         const auto& sl = controller_->slotMirror(sIdx);
@@ -412,7 +398,6 @@ void WreckageWinView::drawStageAndMixerTab(const ThemePalette& th) {
         rt_->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(nx, ny), rad, rad), brush_, (sIdx == selectedSlot_) ? 2.4f : 1.2f);
     }
 
-    // Right: 5-BUS MIXER
     brush_->SetColor(toD2D(th.panelBg));
     rt_->FillRectangle(D2D1::RectF(428, 120, 824, 624), brush_);
     brush_->SetColor(toD2D(th.border));
@@ -426,7 +411,6 @@ void WreckageWinView::drawStageAndMixerTab(const ThemePalette& th) {
         bool byp = controller_->getParamNormalized(kParamBusCloseBypass + b) >= 0.5;
         drawFader(442, y, 310, 20, val, busNames[b], th, !byp && b == 4);
 
-        // Bypass Circle LED
         brush_->SetColor(toD2D(byp ? th.headerBg : th.accent));
         rt_->FillEllipse(D2D1::Ellipse(D2D1::Point2F(786, y + 10), 12, 12), brush_);
         brush_->SetColor(toD2D(th.border));
@@ -462,7 +446,6 @@ void WreckageWinView::drawMasterFxTab(const ThemePalette& th) {
         drawFader(442, y, 356, 20, static_cast<float>(controller_->getParamNormalized(rightFx[i].id)), rightFx[i].name, th, rightFx[i].accent);
     }
 
-    // Bottom Row Toggles: Velocity Curve, Mono Bass, Output Limiter
     int vc = static_cast<int>(std::round(controller_->getParamNormalized(kParamVelCurve) * 2.0));
     const wchar_t* vcLabel = (vc == 0) ? L"VEL CURVE: SOFT" : ((vc == 1) ? L"VEL CURVE: LINEAR" : L"VEL CURVE: HARD");
     bool mb  = controller_->getParamNormalized(kParamMonoBass) >= 0.5;
@@ -481,7 +464,6 @@ void WreckageWinView::drawMasterFxTab(const ThemePalette& th) {
 }
 
 void WreckageWinView::drawPunishAndKeyboard(const ThemePalette& th) {
-    // Signature PUNISH Bar (y: 636..724)
     brush_->SetColor(toD2D(th.punishBg));
     rt_->FillRectangle(D2D1::RectF(0, 636, 840, 724), brush_);
     brush_->SetColor(toD2D(th.border));
@@ -507,7 +489,6 @@ void WreckageWinView::drawPunishAndKeyboard(const ThemePalette& th) {
         drawText(pModes[i], bx, 654, 102, 52, 0xFFFFFF, 10.0f, true, DWRITE_TEXT_ALIGNMENT_CENTER);
     }
 
-    // 3-Octave Custom Color-Coded MIDI Keyboard (y: 724..840)
     brush_->SetColor(toD2D(th.headerBg));
     rt_->FillRectangle(D2D1::RectF(0, 724, 840, 840), brush_);
 
@@ -515,7 +496,6 @@ void WreckageWinView::drawPunishAndKeyboard(const ThemePalette& th) {
     static const bool kHasBlackAfter[7] = { true, true, false, true, true, true, false };
     float kbX = 42.0f, whiteW = 36.0f, kbY = 732.0f, kbH = 98.0f;
 
-    // Octave Shift buttons
     brush_->SetColor(toD2D(th.panelBg));
     rt_->FillRectangle(D2D1::RectF(8, kbY, 36, kbY + kbH), brush_);
     rt_->FillRectangle(D2D1::RectF(804, kbY, 832, kbY + kbH), brush_);
@@ -538,7 +518,6 @@ void WreckageWinView::drawPunishAndKeyboard(const ThemePalette& th) {
         return count;
     };
 
-    // White keys
     for (int oct = 0; oct < 3; ++oct) {
         for (int k = 0; k < 7; ++k) {
             int note = kBaseMidiNote + (oct + keyboardOctaveOffset_) * 12 + kWhiteOffsets[k];
@@ -548,7 +527,6 @@ void WreckageWinView::drawPunishAndKeyboard(const ThemePalette& th) {
             uint32_t c1 = 0, c2 = 0;
             int cnt = collectNoteColors(note, c1, c2);
             if (cnt >= 2 && c2 != 0) {
-                // Dual-Color Split for Layered Pads
                 brush_->SetColor(toD2D(c1));
                 rt_->FillRectangle(D2D1::RectF(kx, kbY + kbH - 14, kx + whiteW * 0.5f, kbY + kbH), brush_);
                 brush_->SetColor(toD2D(c2));
@@ -562,7 +540,6 @@ void WreckageWinView::drawPunishAndKeyboard(const ThemePalette& th) {
         }
     }
 
-    // Black keys
     for (int oct = 0; oct < 3; ++oct) {
         for (int k = 0; k < 7; ++k) {
             if (!kHasBlackAfter[k]) continue;
@@ -615,7 +592,7 @@ void WreckageWinView::applyZoomIndex(int idx) {
 }
 
 void WreckageWinView::openRootFolderDialog() {
-    if (FAILED(CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED))) {}
+    ComApartmentGuard guard;
     IFileOpenDialog* dlg = nullptr;
     if (SUCCEEDED(CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_ALL, IID_PPV_ARGS(&dlg)))) {
         DWORD opts = 0;
@@ -639,7 +616,7 @@ void WreckageWinView::openRootFolderDialog() {
 
 void WreckageWinView::openLoadWavDialog() {
 #if !WRECKAGE_IS_PLAYER
-    if (FAILED(CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED))) {}
+    ComApartmentGuard guard;
     IFileOpenDialog* dlg = nullptr;
     if (SUCCEEDED(CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_ALL, IID_PPV_ARGS(&dlg)))) {
         DWORD opts = 0;
@@ -673,7 +650,7 @@ void WreckageWinView::openLoadWavDialog() {
 
 void WreckageWinView::openExportNm6Dialog() {
 #if !WRECKAGE_IS_PLAYER
-    if (FAILED(CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED))) {}
+    ComApartmentGuard guard;
     IFileSaveDialog* dlg = nullptr;
     if (SUCCEEDED(CoCreateInstance(CLSID_FileSaveDialog, nullptr, CLSCTX_ALL, IID_PPV_ARGS(&dlg)))) {
         COMDLG_FILTERSPEC spec[] = { { L"Noise Mu6ix Pack (.nm6)", L"*.nm6" } };
@@ -717,7 +694,6 @@ void WreckageWinView::onMouseDown(float lx, float ly) {
         return;
     }
 
-    // Header clicks
     if (ly < 68) {
         if (lx >= 475 && lx <= 558 && ly <= 34) { openRootFolderDialog(); return; }
         if (lx >= 230 && lx <= 560) { rescanRootDirectory(); browserOpen_ = true; InvalidateRect(hwnd_, nullptr, FALSE); return; }
@@ -734,18 +710,16 @@ void WreckageWinView::onMouseDown(float lx, float ly) {
         }
     }
 
-    // Tabs
     if (ly >= 68 && ly < 106) {
         activeTab_ = std::clamp(static_cast<int>(lx / 280.0f), 0, 2);
         InvalidateRect(hwnd_, nullptr, FALSE);
         return;
     }
 
-    // PUNISH bar
     if (ly >= 636 && ly < 724) {
         if (lx >= 138 && lx <= 488) {
             dragTarget_ = 2;
-            controller_->uiSetParam(kParamPunishAmount, (lx - 138.0f) / 350.0f);
+            controller_->uiSetParam(kParamPunishAmount, std::clamp((lx - 138.0f) / 350.0f, 0.0f, 1.0f));
             InvalidateRect(hwnd_, nullptr, FALSE);
             return;
         }
@@ -757,7 +731,6 @@ void WreckageWinView::onMouseDown(float lx, float ly) {
         }
     }
 
-    // Virtual 3-Octave Color Keyboard
     if (ly >= 724) {
         if (lx < 38) { keyboardOctaveOffset_ = std::max(-2, keyboardOctaveOffset_ - 1); InvalidateRect(hwnd_, nullptr, FALSE); return; }
         if (lx > 802) { keyboardOctaveOffset_ = std::min(3, keyboardOctaveOffset_ + 1); InvalidateRect(hwnd_, nullptr, FALSE); return; }
@@ -771,7 +744,6 @@ void WreckageWinView::onMouseDown(float lx, float ly) {
         return;
     }
 
-    // Tab-specific interactions
     if (activeTab_ == 0) {
         if (ly >= 156 && ly <= 184 && lx >= 26 && lx <= 400) {
             activeBank_ = std::clamp(static_cast<int>((lx - 26.0f) / 126.0f), 0, 2);
@@ -813,7 +785,7 @@ void WreckageWinView::onMouseDown(float lx, float ly) {
         } else if (lx >= 442 && lx <= 752 && ly >= 175 && ly <= 590) {
             int b = std::clamp(static_cast<int>((ly - 175.0f) / 84.0f), 0, 4);
             dragTarget_ = 10 + b;
-            controller_->uiSetParam(kParamBusCloseGain + b, (lx - 442.0f) / 310.0f);
+            controller_->uiSetParam(kParamBusCloseGain + b, std::clamp((lx - 442.0f) / 310.0f, 0.0f, 1.0f));
         } else if (lx >= 766 && lx <= 808 && ly >= 175 && ly <= 590) {
             int b = std::clamp(static_cast<int>((ly - 175.0f) / 84.0f), 0, 4);
             bool byp = controller_->getParamNormalized(kParamBusCloseBypass + b) >= 0.5;
@@ -836,11 +808,11 @@ void WreckageWinView::onMouseDown(float lx, float ly) {
             if (lx >= 36 && lx <= 392) {
                 dragTarget_ = 30 + row;
                 static const ParamID lIds[4] = { kParamMasterHPF, kParamMasterLPF, kParamEqLow, kParamEqMid };
-                controller_->uiSetParam(lIds[row], (lx - 36.0f) / 356.0f);
+                controller_->uiSetParam(lIds[row], std::clamp((lx - 36.0f) / 356.0f, 0.0f, 1.0f));
             } else if (lx >= 442 && lx <= 798) {
                 dragTarget_ = 34 + row;
                 static const ParamID rIds[4] = { kParamEqHigh, kParamCompAmount, kParamTransientPunch, kParamStereoWidth };
-                controller_->uiSetParam(rIds[row], (lx - 442.0f) / 356.0f);
+                controller_->uiSetParam(rIds[row], std::clamp((lx - 442.0f) / 356.0f, 0.0f, 1.0f));
             }
         }
     }
@@ -854,17 +826,17 @@ void WreckageWinView::onMouseMove(float lx, float ly) {
         float ny = (598.0f - ly) / 436.0f;
         controller_->uiSetStageXY(selectedSlot_, nx, ny);
     } else if (dragTarget_ == 2) {
-        controller_->uiSetParam(kParamPunishAmount, (lx - 138.0f) / 350.0f);
+        controller_->uiSetParam(kParamPunishAmount, std::clamp((lx - 138.0f) / 350.0f, 0.0f, 1.0f));
     } else if (dragTarget_ >= 10 && dragTarget_ <= 14) {
-        controller_->uiSetParam(kParamBusCloseGain + (dragTarget_ - 10), (lx - 442.0f) / 310.0f);
+        controller_->uiSetParam(kParamBusCloseGain + (dragTarget_ - 10), std::clamp((lx - 442.0f) / 310.0f, 0.0f, 1.0f));
     } else if (dragTarget_ >= 20 && dragTarget_ <= 24) {
         controller_->uiSetSlotProp(selectedSlot_, dragTarget_ - 20, 0, std::clamp((lx - 440.0f) / 368.0f, 0.0f, 1.0f));
     } else if (dragTarget_ >= 30 && dragTarget_ <= 33) {
         static const ParamID lIds[4] = { kParamMasterHPF, kParamMasterLPF, kParamEqLow, kParamEqMid };
-        controller_->uiSetParam(lIds[dragTarget_ - 30], (lx - 36.0f) / 356.0f);
+        controller_->uiSetParam(lIds[dragTarget_ - 30], std::clamp((lx - 36.0f) / 356.0f, 0.0f, 1.0f));
     } else if (dragTarget_ >= 34 && dragTarget_ <= 37) {
         static const ParamID rIds[4] = { kParamEqHigh, kParamCompAmount, kParamTransientPunch, kParamStereoWidth };
-        controller_->uiSetParam(rIds[dragTarget_ - 34], (lx - 442.0f) / 356.0f);
+        controller_->uiSetParam(rIds[dragTarget_ - 34], std::clamp((lx - 442.0f) / 356.0f, 0.0f, 1.0f));
     }
     InvalidateRect(hwnd_, nullptr, FALSE);
 }
@@ -911,7 +883,6 @@ LRESULT WreckageWinView::handleMessage(UINT msg, WPARAM wParam, LPARAM lParam) {
             onMouseUp();
             return 0;
         case WM_KEYDOWN:
-            // Pass-Through Focus so FL Studio Spacebar / Ctrl+S always work!
             if (HWND p = GetParent(hwnd_)) PostMessageW(p, msg, wParam, lParam);
             return 0;
 #if !WRECKAGE_IS_PLAYER

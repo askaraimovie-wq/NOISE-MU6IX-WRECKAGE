@@ -2,14 +2,14 @@
 #include "wreckage_uids.h"
 #include "base/source/fstreamer.h"
 #include "public.sdk/source/vst/vstbus.h"
-#include <algorithm>
-#include <cstring>
 #include "pluginterfaces/base/ibstream.h"
 #include "pluginterfaces/vst/ivstevents.h"
 #include "pluginterfaces/vst/ivstparameterchanges.h"
 #include "pluginterfaces/vst/ivstmessage.h"
 #include "pluginterfaces/base/ustring.h"
+#include <algorithm>
 #include <cmath>
+#include <cstring>
 #include <filesystem>
 
 using namespace Steinberg;
@@ -25,7 +25,6 @@ tresult PLUGIN_API WreckageProcessor::initialize(FUnknown* context) {
     tresult res = AudioEffect::initialize(context);
     if (res != kResultOk) return res;
 
-    // Main Stereo Output + 5 Multi-Out Aux Stereo Buses (Close, Room, Hall, LFE, Crush)
     addAudioOutput(STR16("Main Out"),  SpeakerArr::kStereo, BusTypes::kMain);
     addAudioOutput(STR16("Close Out"), SpeakerArr::kStereo, BusTypes::kAux, 0);
     addAudioOutput(STR16("Room Out"),  SpeakerArr::kStereo, BusTypes::kAux, 0);
@@ -104,7 +103,6 @@ void WreckageProcessor::applyNormalizedParam(ParamID id, ParamValue val) {
 }
 
 tresult PLUGIN_API WreckageProcessor::process(ProcessData& data) {
-    // 1. Handle Parameter Automation Changes
     if (data.inputParameterChanges) {
         int32 numParams = data.inputParameterChanges->getParameterCount();
         for (int32 i = 0; i < numParams; ++i) {
@@ -121,7 +119,6 @@ tresult PLUGIN_API WreckageProcessor::process(ProcessData& data) {
         }
     }
 
-    // 2. Handle Incoming MIDI Note Events
     if (data.inputEvents) {
         int32 nEv = data.inputEvents->getEventCount();
         for (int32 i = 0; i < nEv; ++i) {
@@ -146,7 +143,6 @@ tresult PLUGIN_API WreckageProcessor::process(ProcessData& data) {
     pb.numSamples = data.numSamples;
     pb.offlineRender = (data.processMode == kOffline);
 
-    // Multi-Out Auto-Routing check
     for (int b = 0; b < 5; ++b) {
         int busIdx = b + 1;
         if (busIdx < data.numOutputs && busIdx < static_cast<int>(audioOutputs.size())) {
@@ -193,7 +189,6 @@ tresult PLUGIN_API WreckageProcessor::setState(IBStream* state) {
     s.readInt32(p.themeIndex);
     s.readInt32(p.zoomIndex);
 
-    // Restore 36 slot configs (Stage X/Y, Key Colors, Smart Modes, Drum Modes, MIDI Note)
     for (int i = 0; i < kTotalSlots; ++i) {
         auto& sl = engine_.slot(i);
         int32 note = kBaseMidiNote + i;
@@ -224,7 +219,7 @@ tresult PLUGIN_API WreckageProcessor::setState(IBStream* state) {
 tresult PLUGIN_API WreckageProcessor::getState(IBStream* state) {
     if (!state) return kResultFalse;
     IBStreamer s(state, kLittleEndian);
-    s.writeInt32(1); // Schema version 1 (forward-compatible)
+    s.writeInt32(1);
 
     const auto& p = engine_.params();
     for (int i = 0; i < 5; ++i) {

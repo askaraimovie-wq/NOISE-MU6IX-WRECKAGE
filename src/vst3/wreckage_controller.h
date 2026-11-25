@@ -23,7 +23,7 @@ struct UiSlotMirror {
     int chokeGroup = 0;
     bool reverse = false;
     bool purged = false;
-    int rrMode = 0;  // 0=AUTO, 1=ON, 2=OFF
+    int rrMode = 0;
     int velMode = 0;
     int micMode = 0;
     int velCount = 0;
@@ -45,7 +45,6 @@ public:
     Steinberg::IPlugView* PLUGIN_API createView(Steinberg::FIDString name) SMTG_OVERRIDE;
     Steinberg::tresult PLUGIN_API notify(Steinberg::Vst::IMessage* message) SMTG_OVERRIDE;
 
-    // UI Helpers (thread-safe VST3 messaging + Automation hooks)
     void uiSetParam(Steinberg::Vst::ParamID id, double normVal, bool beginEnd = true);
     void uiTriggerNote(int midiNote, float vel, bool isOn);
     void uiSetStageXY(int slotIdx, float x, float y);

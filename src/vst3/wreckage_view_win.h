@@ -61,13 +61,17 @@ private:
     ID2D1HwndRenderTarget* rt_ = nullptr;
     ID2D1SolidColorBrush* brush_ = nullptr;
 
-    int activeTab_ = 1; // 0=SOURCE/KIT, 1=STAGE & MIXER, 2=MASTER FX
+#if !WRECKAGE_IS_PLAYER
+    int activeTab_ = 0;
+#else
+    int activeTab_ = 1;
+#endif
     int activeBank_ = 0;
     int selectedSlot_ = 0;
     int keyboardOctaveOffset_ = 0;
     bool browserOpen_ = false;
     int activePressedNote_ = -1;
-    int dragTarget_ = 0; // 0=none, 1=stageNode, 2=punish, 10..14=5-bus, 20..24=slotFaders, 30..37=masterFx
+    int dragTarget_ = 0;
 
     std::vector<std::wstring> browserCategories_;
     std::vector<std::wstring> browserItems_;
