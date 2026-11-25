@@ -24,14 +24,14 @@ struct UiSlotMirror {
     int midiNote = kBaseMidiNote;
     uint32_t keyColor = 0;
     bool hasCustomColor = false;
-    float gain = 0.80f;      // 80% default
-    float pitch = 0.5f;      // 0 st default
-    float toneLow = 0.5f;    // 0 dB default
-    float toneHigh = 0.5f;   // 0 dB default
-    float attack = 0.0f;     // 0 ms default
-    float release = 0.145f;  // ~600 ms default
-    float stageX = 0.0f;     // Center default
-    float stageY = 0.0f;     // Front default
+    float gain = 0.80f;
+    float pitch = 0.5f;
+    float toneLow = 0.5f;
+    float toneHigh = 0.5f;
+    float attack = 0.0f;
+    float release = 0.145f;
+    float stageX = 0.0f;
+    float stageY = 0.0f;
     bool oneShot = true;
     int chokeGroup = 0;
     bool reverse = false;
@@ -78,6 +78,7 @@ public:
 
     int liveVoices() const { return liveVoices_; }
     uint64_t liveRamBytes() const { return liveRamBytes_; }
+    float liveGrDb() const { return liveGrDb_; }
     bool isMidiNoteLive(int note) const {
         if (note < 0 || note >= 128) return false;
         uint64_t mask = (note < 64) ? notesLo_ : notesHi_;
@@ -93,6 +94,7 @@ private:
     std::string activePresetName_ = "EMPTY KIT (DROP WAV)";
     int liveVoices_ = 0;
     uint64_t liveRamBytes_ = 0;
+    float liveGrDb_ = 0.0f;
     uint64_t notesLo_ = 0;
     uint64_t notesHi_ = 0;
     int saveFlashTicks_ = 0;

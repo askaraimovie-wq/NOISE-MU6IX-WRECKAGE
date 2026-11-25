@@ -210,7 +210,7 @@ tresult PLUGIN_API WreckageProcessor::setState(IBStream* state) {
     if (!state) return kResultFalse;
     IBStreamer s(state, kLittleEndian);
     int32 ver = 0;
-    if (!s.readInt32(ver) || ver != 3) return kResultFalse;
+    if (!s.readInt32(ver) || ver != 4) return kResultFalse;
 
     auto& p = engine_.params();
     auto& fx = p.fx;
@@ -242,7 +242,7 @@ tresult PLUGIN_API WreckageProcessor::setState(IBStream* state) {
 tresult PLUGIN_API WreckageProcessor::getState(IBStream* state) {
     if (!state) return kResultFalse;
     IBStreamer s(state, kLittleEndian);
-    s.writeInt32(3);
+    s.writeInt32(4);
 
     const auto& p = engine_.params();
     const auto& fx = p.fx;
@@ -316,6 +316,7 @@ void WreckageProcessor::broadcastTelemetryToUi() {
         auto* attrs = msg->getAttributes();
         attrs->setInt("voices", engine_.activeVoiceCount());
         attrs->setInt("ramBytes", static_cast<int64>(engine_.totalSampleRamBytes()));
+        attrs->setFloat("grDb", static_cast<double>(engine_.currentGrDb()));
         uint64_t lo = 0, hi = 0;
         for (int n = 0; n < 64; ++n) {
             if (engine_.isNotePlaying(n)) lo |= (1ULL << n);
@@ -402,7 +403,7 @@ tresult PLUGIN_API WreckageProcessor::notify(IMessage* message) {
         attrs->getInt("slot", sl); attrs->getInt("prop", prop); attrs->getInt("ival", ival); attrs->getFloat("fval", fval);
         auto& s = engine_.slot(static_cast<int>(sl));
         switch (prop) {
-            case 0: s.gain = static_cast<float>(fval); break; // 0..1 (0.80 = 80%)
+            case 0: s.gain = static_cast<float>(fval); break;
             case 1: s.pitchSemitones = (static_cast<float>(fval) - 0.5f) * 48.0f; break;
             case 2: s.attackMs = static_cast<float>(fval) * 200.0f; break;
             case 3: s.releaseMs = 20.0f + static_cast<float>(fval) * 3980.0f; break;

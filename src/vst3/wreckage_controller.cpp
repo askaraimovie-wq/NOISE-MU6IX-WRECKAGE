@@ -51,7 +51,6 @@ tresult PLUGIN_API WreckageController::initialize(FUnknown* context) {
     addRange(kParamBusHallBypass,  STR16("Hall Bypass"),  0.0, 1);
     addRange(kParamBusSubBypass,   STR16("Sub Bypass"),   0.0, 1);
 
-    // Master FX Modules
     addRange(kParamFilterOn,     STR16("Filter On"),     0.0, 1);
     addRange(kParamFilterType,   STR16("Filter Type"),   0.0, 7);
     addRange(kParamFilterCutoff, STR16("Filter Cutoff"), 0.92);
@@ -71,12 +70,12 @@ tresult PLUGIN_API WreckageController::initialize(FUnknown* context) {
     addRange(kParamCompAttack,  STR16("Comp Attack"),  0.12);
     addRange(kParamCompRelease, STR16("Comp Release"), 0.25);
     addRange(kParamCompKnee,    STR16("Comp Knee"),    0.33);
-    addRange(kParamCompMakeup,  STR16("Comp Makeup"),  0.10);
+    addRange(kParamCompMakeup,  STR16("Comp Makeup"),  0.50); // 0.50 = 0.0 dB center
 
     addRange(kParamSatOn,     STR16("Sat On"),     0.0, 1);
     addRange(kParamSatDrive,  STR16("Sat Drive"),  0.25);
     addRange(kParamSatWarmth, STR16("Sat Warmth"), 0.50);
-    addRange(kParamSatMix,    STR16("Sat Mix"),    0.50);
+    addRange(kParamSatMix,    STR16("Sat Mix"),    0.00); // Default 0% (100% Dry)
 
     addRange(kParamDelayOn,       STR16("Delay On"),       0.0, 1);
     addRange(kParamDelayMode,     STR16("Delay Mode"),     0.0, 1);
@@ -87,7 +86,7 @@ tresult PLUGIN_API WreckageController::initialize(FUnknown* context) {
     addRange(kParamDelayMix,      STR16("Delay Mix"),      0.22);
 
     addRange(kParamRevOn,       STR16("Reverb On"),      0.0, 1);
-    addRange(kParamRevMode,     STR16("Reverb Mode"),    1.0, 2); // Hall
+    addRange(kParamRevMode,     STR16("Reverb Mode"),    1.0, 2);
     addRange(kParamRevPreDelay, STR16("Reverb PreDelay"),0.15);
     addRange(kParamRevDecay,    STR16("Reverb Decay"),   0.35);
     addRange(kParamRevSize,     STR16("Reverb Size"),    0.65);
@@ -106,8 +105,8 @@ tresult PLUGIN_API WreckageController::initialize(FUnknown* context) {
     addRange(kParamPunishAmount, STR16("PUNISH Amount"), 0.30);
     addRange(kParamPunishMode,   STR16("PUNISH Mode"),   0.5, 2);
 
-    addRange(kParamThemeIndex, STR16("UI Theme"), 0.0, 9); // Paper Sketch
-    addRange(kParamUiZoom,     STR16("UI Zoom"),  1.0, 2); // 100% Default
+    addRange(kParamThemeIndex, STR16("UI Theme"), 0.0, 9);
+    addRange(kParamUiZoom,     STR16("UI Zoom"),  1.0, 2);
 
     return kResultOk;
 }
@@ -118,7 +117,7 @@ tresult PLUGIN_API WreckageController::setComponentState(IBStream* state) {
     if (!state) return kResultFalse;
     IBStreamer s(state, kLittleEndian);
     int32 ver = 0;
-    if (!s.readInt32(ver) || ver != 3) return kResultFalse;
+    if (!s.readInt32(ver) || ver != 4) return kResultFalse;
 
     float f = 0.0f; int8 b = 0; int32 iv = 0;
     for (int i = 0; i < 4; ++i) {
@@ -238,11 +237,13 @@ tresult PLUGIN_API WreckageController::notify(IMessage* message) {
         return kResultOk;
     }
     if (strcmp(mid, "Telemetry") == 0) {
-        int64 v = 0, rb = 0, lo = 0, hi = 0;
+        int64 v = 0, rb = 0, lo = 0, hi = 0; double gr = 0.0;
         attrs->getInt("voices", v); attrs->getInt("ramBytes", rb);
+        attrs->getFloat("grDb", gr);
         attrs->getInt("notesLo", lo); attrs->getInt("notesHi", hi);
         liveVoices_ = static_cast<int>(v);
         liveRamBytes_ = static_cast<uint64_t>(rb);
+        liveGrDb_ = static_cast<float>(gr);
         notesLo_ = static_cast<uint64_t>(lo);
         notesHi_ = static_cast<uint64_t>(hi);
         return kResultOk;

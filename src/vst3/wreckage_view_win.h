@@ -46,6 +46,7 @@ private:
     void drawText(const wchar_t* text, float x, float y, float w, float h, uint32_t rgb, float sizePt, bool bold = false, DWRITE_TEXT_ALIGNMENT align = DWRITE_TEXT_ALIGNMENT_LEADING);
     D2D1_COLOR_F toD2D(uint32_t rgb, float alpha = 1.0f) const;
 
+    int hitTestPianoKeyMapNote(float lx, float ly) const;
     void onMouseDown(float lx, float ly);
     void onMouseDoubleClick(float lx, float ly);
     void onMouseMove(float lx, float ly);
