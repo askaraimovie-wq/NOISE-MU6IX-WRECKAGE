@@ -352,11 +352,12 @@ void WreckageWinView::drawSourceOrKitTab(const ThemePalette& th) {
     rt_->FillRectangle(D2D1::RectF(162, 568, 288, 608), brush_);
     drawText(L"EXPORT .nm6", 162, 568, 126, 40, 0xFFFFFF, 11.0f, true, DWRITE_TEXT_ALIGNMENT_CENTER);
 #endif
-    brush_->SetColor(toD2D(th.headerBg));
+    bool selPurged = controller_->slotMirror(selectedSlot_).purged;
+    brush_->SetColor(toD2D(selPurged ? th.accent : th.headerBg));
     rt_->FillRectangle(D2D1::RectF(298, 568, 402, 608), brush_);
     brush_->SetColor(toD2D(th.border));
     rt_->DrawRectangle(D2D1::RectF(298, 568, 402, 608), brush_, 1.2f);
-    drawText(L"PURGE", 298, 568, 104, 40, th.textPrimary, 11.0f, true, DWRITE_TEXT_ALIGNMENT_CENTER);
+    drawText(selPurged ? L"UNPURGE" : L"MUTE/PURGE", 298, 568, 104, 40, selPurged ? 0xFFFFFF : th.textPrimary, 10.0f, true, DWRITE_TEXT_ALIGNMENT_CENTER);
 
     const auto& sl = controller_->slotMirror(selectedSlot_);
     brush_->SetColor(toD2D(th.panelBg));
@@ -419,7 +420,7 @@ void WreckageWinView::drawStageAndMixerTab(const ThemePalette& th) {
     rt_->FillRectangle(D2D1::RectF(16, 120, 412, 624), brush_);
     brush_->SetColor(toD2D(th.border));
     rt_->DrawRectangle(D2D1::RectF(16, 120, 412, 624), brush_, 1.6f);
-    drawText(L"THE STAGE  (X: STEREO PAN • Y: DEPTH)", 26, 128, 376, 24, th.textPrimary, 12.0f, true);
+    drawText(L"THE STAGE  (X: STEREO PAN  |  Y: DEPTH)", 26, 128, 376, 24, th.textPrimary, 12.0f, true);
 
     D2D1_RECT_F stageBox = D2D1::RectF(32, 162, 396, 598);
     brush_->SetColor(toD2D(th.bg));
@@ -447,6 +448,8 @@ void WreckageWinView::drawStageAndMixerTab(const ThemePalette& th) {
         rt_->FillEllipse(D2D1::Ellipse(D2D1::Point2F(nx, ny), rad, rad), brush_);
         brush_->SetColor(toD2D(th.border));
         rt_->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(nx, ny), rad, rad), brush_, (sIdx == selectedSlot_) ? 2.4f : 1.2f);
+        std::wstring sLbl = std::to_wstring(i + 1);
+        drawText(sLbl.c_str(), nx - 12.0f, ny - 8.0f, 24.0f, 16.0f, 0xFFFFFF, 9.5f, true, DWRITE_TEXT_ALIGNMENT_CENTER);
     }
 
     brush_->SetColor(toD2D(th.panelBg));
@@ -475,7 +478,7 @@ void WreckageWinView::drawMasterFxTab(const ThemePalette& th) {
     rt_->FillRectangle(D2D1::RectF(16, 120, 824, 624), brush_);
     brush_->SetColor(toD2D(th.border));
     rt_->DrawRectangle(D2D1::RectF(16, 120, 824, 624), brush_, 1.6f);
-    drawText(L"MASTER FX RACK  •  TRANSIENT PUNCH  •  STEREO WIDTH  •  LIMITER", 28, 128, 780, 24, th.textPrimary, 12.5f, true);
+    drawText(L"MASTER FX RACK  |  TRANSIENT PUNCH  |  STEREO WIDTH  |  LIMITER", 28, 128, 780, 24, th.textPrimary, 12.5f, true);
 
     struct FxDef { ParamID id; const wchar_t* name; bool accent; };
     const FxDef leftFx[4] = {
@@ -786,9 +789,28 @@ void WreckageWinView::onMouseDown(float lx, float ly) {
         if (lx < 38) { keyboardOctaveOffset_ = std::max(-2, keyboardOctaveOffset_ - 1); InvalidateRect(hwnd_, nullptr, FALSE); return; }
         if (lx > 802) { keyboardOctaveOffset_ = std::min(3, keyboardOctaveOffset_ + 1); InvalidateRect(hwnd_, nullptr, FALSE); return; }
         static const int kWhiteOffsets[7] = { 0, 2, 4, 5, 7, 9, 11 };
-        int wIdx = std::clamp(static_cast<int>((lx - 42.0f) / 36.0f), 0, 20);
-        int oct = wIdx / 7, k = wIdx % 7;
-        int note = kBaseMidiNote + (oct + keyboardOctaveOffset_) * 12 + kWhiteOffsets[k];
+        static const bool kHasBlackAfter[7] = { true, true, false, true, true, true, false };
+        float kbX = 42.0f, whiteW = 36.0f, kbY = 732.0f;
+        int note = -1;
+        // 1. Check Black Keys FIRST (top 58px of keyboard)
+        if (ly >= kbY && ly <= kbY + 58.0f) {
+            for (int oct = 0; oct < 3 && note < 0; ++oct) {
+                for (int k = 0; k < 7; ++k) {
+                    if (!kHasBlackAfter[k]) continue;
+                    float kx = kbX + (oct * 7 + k + 1) * whiteW - 11.0f;
+                    if (lx >= kx && lx <= kx + 22.0f) {
+                        note = kBaseMidiNote + (oct + keyboardOctaveOffset_) * 12 + kWhiteOffsets[k] + 1;
+                        break;
+                    }
+                }
+            }
+        }
+        // 2. Fallback to White Keys
+        if (note < 0) {
+            int wIdx = std::clamp(static_cast<int>((lx - kbX) / whiteW), 0, 20);
+            int oct = wIdx / 7, k = wIdx % 7;
+            note = kBaseMidiNote + (oct + keyboardOctaveOffset_) * 12 + kWhiteOffsets[k];
+        }
         activePressedNote_ = note;
         controller_->uiTriggerNote(note, 0.90f, true);
         InvalidateRect(hwnd_, nullptr, FALSE);
@@ -829,6 +851,21 @@ void WreckageWinView::onMouseDown(float lx, float ly) {
         }
     } else if (activeTab_ == 1) {
         if (lx >= 32 && lx <= 396 && ly >= 162 && ly <= 598) {
+            // Find closest dot in active bank so user can click & drag ANY instrument directly!
+            int hitSlot = -1;
+            float bestDist2 = 24.0f * 24.0f;
+            for (int i = 0; i < 12; ++i) {
+                int sIdx = activeBank_ * 12 + i;
+                const auto& sl = controller_->slotMirror(sIdx);
+                float dx = (32.0f + ((sl.stageX + 1.0f) * 0.5f) * 364.0f) - lx;
+                float dy = (598.0f - sl.stageY * 436.0f) - ly;
+                float d2 = dx * dx + dy * dy;
+                if (d2 <= bestDist2) { bestDist2 = d2; hitSlot = sIdx; }
+            }
+            if (hitSlot >= 0) {
+                selectedSlot_ = hitSlot;
+                controller_->uiTriggerNote(controller_->slotMirror(selectedSlot_).midiNote, 0.85f, true);
+            }
             dragTarget_ = 1;
             float nx = ((lx - 32.0f) / 364.0f) * 2.0f - 1.0f;
             float ny = (598.0f - ly) / 436.0f;
