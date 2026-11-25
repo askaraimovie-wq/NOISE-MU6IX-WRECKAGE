@@ -1,0 +1,167 @@
+#pragma once
+#include <cstdint>
+#include <cstring>
+#include <filesystem>
+#include <fstream>
+#include <string>
+#include <vector>
+#include <algorithm>
+
+namespace NoiseMu6ix {
+
+struct AudioBuffer {
+    std::vector<float> left;
+    std::vector<float> right;
+    uint32_t sampleRate = 44100;
+
+    size_t numFrames() const { return left.size(); }
+    bool empty() const { return left.empty(); }
+};
+
+class WavLoader {
+public:
+    static bool loadFromMemory(const uint8_t* data, size_t size, AudioBuffer& out) {
+        if (!data || size < 44) return false;
+        if (std::memcmp(data, "RIFF", 4) != 0 || std::memcmp(data + 8, "WAVE", 4) != 0)
+            return false;
+
+        uint16_t audioFormat = 0;
+        uint16_t numChannels = 0;
+        uint32_t sampleRate = 44100;
+        uint16_t bitsPerSample = 0;
+        const uint8_t* pcmData = nullptr;
+        uint32_t pcmSize = 0;
+
+        size_t pos = 12;
+        while (pos + 8 <= size) {
+            char chunkId[5] = {0};
+            std::memcpy(chunkId, data + pos, 4);
+            uint32_t chunkSize = readU32(data + pos + 4);
+            pos += 8;
+            if (pos + chunkSize > size) chunkSize = static_cast<uint32_t>(size - pos);
+
+            if (std::memcmp(chunkId, "fmt ", 4) == 0 && chunkSize >= 16) {
+                audioFormat   = readU16(data + pos);
+                numChannels   = readU16(data + pos + 2);
+                sampleRate    = readU32(data + pos + 4);
+                bitsPerSample = readU16(data + pos + 14);
+                // Handle WAVE_FORMAT_EXTENSIBLE (0xFFFE)
+                if (audioFormat == 0xFFFE && chunkSize >= 40) {
+                    uint16_t subFormat = readU16(data + pos + 24);
+                    audioFormat = subFormat;
+                }
+            } else if (std::memcmp(chunkId, "data", 4) == 0) {
+                pcmData = data + pos;
+                pcmSize = chunkSize;
+            }
+            pos += chunkSize + (chunkSize & 1u);
+        }
+
+        if (!pcmData || pcmSize == 0 || numChannels == 0 || bitsPerSample == 0)
+            return false;
+
+        uint32_t bytesPerSample = bitsPerSample / 8;
+        if (bytesPerSample == 0) return false;
+        size_t frameStride = static_cast<size_t>(bytesPerSample) * numChannels;
+        size_t numFrames = pcmSize / frameStride;
+        if (numFrames == 0) return false;
+
+        out.sampleRate = sampleRate;
+        out.left.resize(numFrames);
+        out.right.resize(numFrames);
+
+        auto decodeSample = [&](const uint8_t* p) -> float {
+            if (audioFormat == 3 && bitsPerSample == 32) {
+                float f = 0.0f;
+                std::memcpy(&f, p, 4);
+                return std::clamp(f, -4.0f, 4.0f);
+            }
+            if (audioFormat == 1) {
+                if (bitsPerSample == 16) {
+                    int16_t v = static_cast<int16_t>(readU16(p));
+                    return static_cast<float>(v) / 32768.0f;
+                } else if (bitsPerSample == 24) {
+                    int32_t v = (static_cast<int32_t>(p[0])) |
+                                (static_cast<int32_t>(p[1]) << 8) |
+                                (static_cast<int32_t>(static_cast<int8_t>(p[2])) << 16);
+                    return static_cast<float>(v) / 8388608.0f;
+                } else if (bitsPerSample == 32) {
+                    int32_t v = static_cast<int32_t>(readU32(p));
+                    return static_cast<float>(static_cast<double>(v) / 2147483648.0);
+                } else if (bitsPerSample == 8) {
+                    return (static_cast<float>(p[0]) - 128.0f) / 128.0f;
+                }
+            }
+            return 0.0f;
+        };
+
+        for (size_t i = 0; i < numFrames; ++i) {
+            const uint8_t* framePtr = pcmData + i * frameStride;
+            float l = decodeSample(framePtr);
+            float r = (numChannels >= 2) ? decodeSample(framePtr + bytesPerSample) : l; // Mono -> Center Stereo
+            out.left[i] = l;
+            out.right[i] = r;
+        }
+        return true;
+    }
+
+    static bool loadFromFile(const std::filesystem::path& path, AudioBuffer& out) {
+        std::ifstream f(path, std::ios::binary | std::ios::ate);
+        if (!f.is_open()) return false;
+        std::streamsize sz = f.tellg();
+        if (sz <= 44) return false;
+        f.seekg(0, std::ios::beg);
+        std::vector<uint8_t> buf(static_cast<size_t>(sz));
+        if (!f.read(reinterpret_cast<char*>(buf.data()), sz)) return false;
+        return loadFromMemory(buf.data(), buf.size(), out);
+    }
+
+    static bool writeWav16(const std::filesystem::path& path, const AudioBuffer& in) {
+        std::ofstream f(path, std::ios::binary);
+        if (!f.is_open()) return false;
+        uint32_t frames = static_cast<uint32_t>(in.numFrames());
+        uint32_t dataSize = frames * 4;
+        uint32_t riffSize = 36 + dataSize;
+        f.write("RIFF", 4);
+        writeU32(f, riffSize);
+        f.write("WAVEfmt ", 8);
+        writeU32(f, 16);
+        writeU16(f, 1);
+        writeU16(f, 2);
+        writeU32(f, in.sampleRate);
+        writeU32(f, in.sampleRate * 4);
+        writeU16(f, 4);
+        writeU16(f, 16);
+        f.write("data", 4);
+        writeU32(f, dataSize);
+        for (uint32_t i = 0; i < frames; ++i) {
+            int16_t l = static_cast<int16_t>(std::clamp(in.left[i], -1.0f, 1.0f) * 32767.0f);
+            int16_t r = static_cast<int16_t>(std::clamp(in.right[i], -1.0f, 1.0f) * 32767.0f);
+            writeU16(f, static_cast<uint16_t>(l));
+            writeU16(f, static_cast<uint16_t>(r));
+        }
+        return f.good();
+    }
+
+private:
+    static uint16_t readU16(const uint8_t* p) {
+        return static_cast<uint16_t>(p[0] | (p[1] << 8));
+    }
+    static uint32_t readU32(const uint8_t* p) {
+        return static_cast<uint32_t>(p[0]) | (static_cast<uint32_t>(p[1]) << 8) |
+               (static_cast<uint32_t>(p[2]) << 16) | (static_cast<uint32_t>(p[3]) << 24);
+    }
+    static void writeU16(std::ofstream& f, uint16_t v) {
+        uint8_t b[2] = { static_cast<uint8_t>(v & 0xFF), static_cast<uint8_t>((v >> 8) & 0xFF) };
+        f.write(reinterpret_cast<const char*>(b), 2);
+    }
+    static void writeU32(std::ofstream& f, uint32_t v) {
+        uint8_t b[4] = {
+            static_cast<uint8_t>(v & 0xFF), static_cast<uint8_t>((v >> 8) & 0xFF),
+            static_cast<uint8_t>((v >> 16) & 0xFF), static_cast<uint8_t>((v >> 24) & 0xFF)
+        };
+        f.write(reinterpret_cast<const char*>(b), 4);
+    }
+};
+
+} // namespace NoiseMu6ix
