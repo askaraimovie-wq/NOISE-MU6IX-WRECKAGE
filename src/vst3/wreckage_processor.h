@@ -29,8 +29,10 @@ public:
 private:
     void applyNormalizedParam(Steinberg::Vst::ParamID id, Steinberg::Vst::ParamValue val);
     void broadcastSlotSummaryToUi(int slotIdx);
+    void broadcastTelemetryToUi();
 
     WreckageEngine engine_;
+    int telemetryCounter_ = 0;
 };
 
 } // namespace NoiseMu6ix

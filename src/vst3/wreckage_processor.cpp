@@ -11,11 +11,20 @@
 #include <cmath>
 #include <cstring>
 #include <filesystem>
+#include <vector>
 
 using namespace Steinberg;
 using namespace Steinberg::Vst;
 
 namespace NoiseMu6ix {
+
+static std::filesystem::path pathFromUtf8(const std::string& u8) {
+#if defined(__cpp_char8_t)
+    return std::filesystem::path(reinterpret_cast<const char8_t*>(u8.c_str()));
+#else
+    return std::filesystem::u8path(u8);
+#endif
+}
 
 WreckageProcessor::WreckageProcessor() {
     setControllerClass(kWreckageControllerUID);
@@ -29,8 +38,7 @@ tresult PLUGIN_API WreckageProcessor::initialize(FUnknown* context) {
     addAudioOutput(STR16("Close Out"), SpeakerArr::kStereo, BusTypes::kAux, 0);
     addAudioOutput(STR16("Room Out"),  SpeakerArr::kStereo, BusTypes::kAux, 0);
     addAudioOutput(STR16("Hall Out"),  SpeakerArr::kStereo, BusTypes::kAux, 0);
-    addAudioOutput(STR16("LFE Out"),   SpeakerArr::kStereo, BusTypes::kAux, 0);
-    addAudioOutput(STR16("Crush Out"), SpeakerArr::kStereo, BusTypes::kAux, 0);
+    addAudioOutput(STR16("Sub Out"),   SpeakerArr::kStereo, BusTypes::kAux, 0);
 
     addEventInput(STR16("MIDI In"), 1);
     engine_.prepare(44100.0);
@@ -69,13 +77,16 @@ void WreckageProcessor::applyNormalizedParam(ParamID id, ParamValue val) {
         case kParamBusCloseGain:   p.busGain[0] = f * 1.25f; break;
         case kParamBusRoomGain:    p.busGain[1] = f * 1.25f; break;
         case kParamBusHallGain:    p.busGain[2] = f * 1.25f; break;
-        case kParamBusLfeGain:     p.busGain[3] = f * 1.25f; break;
-        case kParamBusCrushGain:   p.busGain[4] = f * 1.25f; break;
+        case kParamBusSubGain:     p.busGain[3] = f * 1.25f; break;
         case kParamBusCloseBypass: p.busBypass[0] = (f >= 0.5f); break;
         case kParamBusRoomBypass:  p.busBypass[1] = (f >= 0.5f); break;
         case kParamBusHallBypass:  p.busBypass[2] = (f >= 0.5f); break;
-        case kParamBusLfeBypass:   p.busBypass[3] = (f >= 0.5f); break;
-        case kParamBusCrushBypass: p.busBypass[4] = (f >= 0.5f); break;
+        case kParamBusSubBypass:   p.busBypass[3] = (f >= 0.5f); break;
+        case kParamFilterOn:       p.filterOn    = (f >= 0.5f); break;
+        case kParamEqOn:           p.eqOn        = (f >= 0.5f); break;
+        case kParamCompOn:         p.compOn      = (f >= 0.5f); break;
+        case kParamTransientOn:    p.transientOn = (f >= 0.5f); break;
+        case kParamPunishOn:       p.punishOn    = (f >= 0.5f); break;
         case kParamMasterHPF:      p.masterHpfHz = 20.0f * std::pow(20.0f, f); break;
         case kParamMasterLPF:      p.masterLpfHz = 2000.0f * std::pow(10.0f, f); break;
         case kParamEqLow:          p.eqLowDb  = (f - 0.5f) * 24.0f; break;
@@ -119,15 +130,18 @@ tresult PLUGIN_API WreckageProcessor::process(ProcessData& data) {
         }
     }
 
+    bool hadMidiEvent = false;
     if (data.inputEvents) {
         int32 nEv = data.inputEvents->getEventCount();
         for (int32 i = 0; i < nEv; ++i) {
             Event ev{};
             if (data.inputEvents->getEvent(i, ev) == kResultOk) {
                 if (ev.type == Event::kNoteOnEvent) {
+                    hadMidiEvent = true;
                     if (ev.noteOn.velocity > 0.0f) engine_.triggerNoteOn(ev.noteOn.pitch, ev.noteOn.velocity);
                     else engine_.triggerNoteOff(ev.noteOn.pitch);
                 } else if (ev.type == Event::kNoteOffEvent) {
+                    hadMidiEvent = true;
                     engine_.triggerNoteOff(ev.noteOff.pitch);
                 }
             }
@@ -143,7 +157,7 @@ tresult PLUGIN_API WreckageProcessor::process(ProcessData& data) {
     pb.numSamples = data.numSamples;
     pb.offlineRender = (data.processMode == kOffline);
 
-    for (int b = 0; b < 5; ++b) {
+    for (int b = 0; b < 4; ++b) {
         int busIdx = b + 1;
         if (busIdx < data.numOutputs && busIdx < static_cast<int>(audioOutputs.size())) {
             auto* bus = FCast<AudioBus>(audioOutputs[busIdx]);
@@ -156,6 +170,11 @@ tresult PLUGIN_API WreckageProcessor::process(ProcessData& data) {
     }
 
     engine_.process(pb);
+
+    if (hadMidiEvent || ++telemetryCounter_ >= 16) {
+        telemetryCounter_ = 0;
+        broadcastTelemetryToUi();
+    }
     return kResultOk;
 }
 
@@ -163,13 +182,20 @@ tresult PLUGIN_API WreckageProcessor::setState(IBStream* state) {
     if (!state) return kResultFalse;
     IBStreamer s(state, kLittleEndian);
     int32 ver = 0;
-    if (!s.readInt32(ver) || ver != 1) return kResultFalse;
+    if (!s.readInt32(ver) || ver != 2) return kResultFalse;
 
     auto& p = engine_.params();
-    for (int i = 0; i < 5; ++i) {
+    for (int i = 0; i < 4; ++i) {
         s.readFloat(p.busGain[i]);
         int8 byp = 0; s.readInt8(byp); p.busBypass[i] = (byp != 0);
     }
+    int8 fo = 1, eo = 1, co = 1, to = 1, po = 1;
+    s.readInt8(fo); p.filterOn = (fo != 0);
+    s.readInt8(eo); p.eqOn = (eo != 0);
+    s.readInt8(co); p.compOn = (co != 0);
+    s.readInt8(to); p.transientOn = (to != 0);
+    s.readInt8(po); p.punishOn = (po != 0);
+
     s.readFloat(p.masterHpfHz);
     s.readFloat(p.masterLpfHz);
     s.readFloat(p.eqLowDb);
@@ -200,6 +226,8 @@ tresult PLUGIN_API WreckageProcessor::setState(IBStream* state) {
         s.readInt8(hasCol); sl.hasCustomColor = (hasCol != 0);
         s.readFloat(sl.gain);
         s.readFloat(sl.pitchSemitones);
+        s.readFloat(sl.toneLowDb);
+        s.readFloat(sl.toneHighDb);
         s.readFloat(sl.attackMs);
         s.readFloat(sl.releaseMs);
         s.readFloat(sl.xfade);
@@ -219,13 +247,19 @@ tresult PLUGIN_API WreckageProcessor::setState(IBStream* state) {
 tresult PLUGIN_API WreckageProcessor::getState(IBStream* state) {
     if (!state) return kResultFalse;
     IBStreamer s(state, kLittleEndian);
-    s.writeInt32(1);
+    s.writeInt32(2);
 
     const auto& p = engine_.params();
-    for (int i = 0; i < 5; ++i) {
+    for (int i = 0; i < 4; ++i) {
         s.writeFloat(p.busGain[i]);
         s.writeInt8(p.busBypass[i] ? 1 : 0);
     }
+    s.writeInt8(p.filterOn ? 1 : 0);
+    s.writeInt8(p.eqOn ? 1 : 0);
+    s.writeInt8(p.compOn ? 1 : 0);
+    s.writeInt8(p.transientOn ? 1 : 0);
+    s.writeInt8(p.punishOn ? 1 : 0);
+
     s.writeFloat(p.masterHpfHz);
     s.writeFloat(p.masterLpfHz);
     s.writeFloat(p.eqLowDb);
@@ -250,6 +284,8 @@ tresult PLUGIN_API WreckageProcessor::getState(IBStream* state) {
         s.writeInt8(sl.hasCustomColor ? 1 : 0);
         s.writeFloat(sl.gain);
         s.writeFloat(sl.pitchSemitones);
+        s.writeFloat(sl.toneLowDb);
+        s.writeFloat(sl.toneHighDb);
         s.writeFloat(sl.attackMs);
         s.writeFloat(sl.releaseMs);
         s.writeFloat(sl.xfade);
@@ -276,9 +312,27 @@ void WreckageProcessor::broadcastSlotSummaryToUi(int slotIdx) {
         attrs->setInt("rrCount", sl.maxRRCount());
         attrs->setInt("color", static_cast<int64>(sl.hasCustomColor ? sl.keyColor : 0));
         attrs->setInt("midiNote", sl.midiNote);
-        String128 name16{};
-        UString(name16, 128).fromAscii(sl.name.c_str());
-        attrs->setString("name", name16);
+        attrs->setFloat("x", sl.stageX);
+        attrs->setFloat("y", sl.stageY);
+        attrs->setBinary("nameUtf8", sl.name.data(), static_cast<uint32>(sl.name.size()));
+        sendMessage(msg);
+        msg->release();
+    }
+}
+
+void WreckageProcessor::broadcastTelemetryToUi() {
+    if (auto* msg = allocateMessage()) {
+        msg->setMessageID("Telemetry");
+        auto* attrs = msg->getAttributes();
+        attrs->setInt("voices", engine_.activeVoiceCount());
+        attrs->setInt("ramBytes", static_cast<int64>(engine_.totalSampleRamBytes()));
+        uint64_t lo = 0, hi = 0;
+        for (int n = 0; n < 64; ++n) {
+            if (engine_.isNotePlaying(n)) lo |= (1ULL << n);
+            if (engine_.isNotePlaying(n + 64)) hi |= (1ULL << n);
+        }
+        attrs->setInt("notesLo", static_cast<int64>(lo));
+        attrs->setInt("notesHi", static_cast<int64>(hi));
         sendMessage(msg);
         msg->release();
     }
@@ -291,16 +345,28 @@ tresult PLUGIN_API WreckageProcessor::notify(IMessage* message) {
     if (!id || !attrs) return AudioEffect::notify(message);
 
     if (strcmp(id, "NoteOn") == 0) {
-        int64 note = 36; double vel = 0.9;
+        int64 note = kBaseMidiNote; double vel = 0.9;
         attrs->getInt("note", note);
         attrs->getFloat("vel", vel);
         engine_.triggerNoteOn(static_cast<int>(note), static_cast<float>(vel));
+        broadcastTelemetryToUi();
         return kResultOk;
     }
     if (strcmp(id, "NoteOff") == 0) {
-        int64 note = 36;
+        int64 note = kBaseMidiNote;
         attrs->getInt("note", note);
         engine_.triggerNoteOff(static_cast<int>(note));
+        broadcastTelemetryToUi();
+        return kResultOk;
+    }
+    if (strcmp(id, "Panic") == 0) {
+        engine_.panicAllNotesOff();
+        broadcastTelemetryToUi();
+        return kResultOk;
+    }
+    if (strcmp(id, "ResetStage") == 0) {
+        engine_.resetStageSpread();
+        for (int i = 0; i < kTotalSlots; ++i) broadcastSlotSummaryToUi(i);
         return kResultOk;
     }
     if (strcmp(id, "SetStageXY") == 0) {
@@ -320,6 +386,18 @@ tresult PLUGIN_API WreckageProcessor::notify(IMessage* message) {
         auto& s = engine_.slot(static_cast<int>(sl));
         s.keyColor = static_cast<uint32_t>(col);
         s.hasCustomColor = (col != 0);
+        return kResultOk;
+    }
+    if (strcmp(id, "RenameSlot") == 0) {
+        int64 sl = 0;
+        const void* ptr = nullptr;
+        uint32 sz = 0;
+        attrs->getInt("slot", sl);
+        if (attrs->getBinary("nameUtf8", ptr, sz) == kResultOk && ptr && sz > 0) {
+            auto& s = engine_.slot(static_cast<int>(sl));
+            s.name.assign(static_cast<const char*>(ptr), sz);
+            broadcastSlotSummaryToUi(static_cast<int>(sl));
+        }
         return kResultOk;
     }
     if (strcmp(id, "SetSmartMode") == 0) {
@@ -352,32 +430,54 @@ tresult PLUGIN_API WreckageProcessor::notify(IMessage* message) {
             case 7: s.reverse = (ival != 0); break;
             case 8: s.purged = (ival != 0); break;
             case 9: s.midiNote = std::clamp(static_cast<int>(ival), 0, 127); break;
+            case 10: s.toneLowDb  = (static_cast<float>(fval) - 0.5f) * 24.0f; break;
+            case 11: s.toneHighDb = (static_cast<float>(fval) - 0.5f) * 24.0f; break;
             default: break;
         }
         return kResultOk;
     }
-#if !WRECKAGE_IS_PLAYER
     if (strcmp(id, "LoadWav") == 0) {
         int64 sl = 0;
-        String128 path16{};
+        const void* ptr = nullptr;
+        uint32 sz = 0;
         attrs->getInt("slot", sl);
-        if (attrs->getString("path", path16, sizeof(path16)) == kResultOk) {
-            std::filesystem::path p(reinterpret_cast<const char16_t*>(path16));
-            if (engine_.loadSampleIntoSlot(static_cast<int>(sl), p)) {
+        if (attrs->getBinary("pathUtf8", ptr, sz) == kResultOk && ptr && sz > 0) {
+            std::string u8(static_cast<const char*>(ptr), sz);
+            if (engine_.loadSampleIntoSlot(static_cast<int>(sl), pathFromUtf8(u8))) {
                 broadcastSlotSummaryToUi(static_cast<int>(sl));
+                broadcastTelemetryToUi();
             }
         }
         return kResultOk;
     }
     if (strcmp(id, "ExportNm6") == 0) {
-        String128 path16{};
-        if (attrs->getString("path", path16, sizeof(path16)) == kResultOk) {
-            std::filesystem::path p(reinterpret_cast<const char16_t*>(path16));
-            engine_.exportKitToNm6(p, p.stem().u8string());
+        const void* ptr = nullptr;
+        uint32 sz = 0;
+        if (attrs->getBinary("pathUtf8", ptr, sz) == kResultOk && ptr && sz > 0) {
+            std::string u8(static_cast<const char*>(ptr), sz);
+            auto p = pathFromUtf8(u8);
+            bool ok = engine_.exportKitToNm6(p, p.stem().u8string());
+            if (auto* reply = allocateMessage()) {
+                reply->setMessageID("SaveDone");
+                reply->getAttributes()->setInt("ok", ok ? 1 : 0);
+                sendMessage(reply);
+                reply->release();
+            }
         }
         return kResultOk;
     }
-#endif
+    if (strcmp(id, "LoadNm6") == 0) {
+        const void* ptr = nullptr;
+        uint32 sz = 0;
+        if (attrs->getBinary("pathUtf8", ptr, sz) == kResultOk && ptr && sz > 0) {
+            std::string u8(static_cast<const char*>(ptr), sz);
+            if (engine_.loadKitFromNm6(pathFromUtf8(u8))) {
+                for (int i = 0; i < kTotalSlots; ++i) broadcastSlotSummaryToUi(i);
+                broadcastTelemetryToUi();
+            }
+        }
+        return kResultOk;
+    }
     return AudioEffect::notify(message);
 }
 

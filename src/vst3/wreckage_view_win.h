@@ -35,47 +35,56 @@ private:
 
     void drawHeader(const ThemePalette& th);
     void drawTabs(const ThemePalette& th);
-    void drawSourceOrKitTab(const ThemePalette& th);
-    void drawStageAndMixerTab(const ThemePalette& th);
+    void drawSourceTab(const ThemePalette& th);
+    void drawStageTab(const ThemePalette& th);
     void drawMasterFxTab(const ThemePalette& th);
     void drawPunishAndKeyboard(const ThemePalette& th);
     void drawLibraryBrowserOverlay(const ThemePalette& th);
+    void drawSettingsOverlay(const ThemePalette& th);
 
-    void drawFader(float x, float y, float w, float h, float val01, const wchar_t* label, const ThemePalette& th, bool accentFill = false);
+    void drawFader(float x, float y, float w, float h, float val01, const wchar_t* label, const ThemePalette& th, bool accentFill = false, bool enabled = true);
     void drawText(const wchar_t* text, float x, float y, float w, float h, uint32_t rgb, float sizePt, bool bold = false, DWRITE_TEXT_ALIGNMENT align = DWRITE_TEXT_ALIGNMENT_LEADING);
     D2D1_COLOR_F toD2D(uint32_t rgb, float alpha = 1.0f) const;
 
     void onMouseDown(float lx, float ly);
+    void onMouseDoubleClick(float lx, float ly);
     void onMouseMove(float lx, float ly);
     void onMouseUp();
+    void startInlineRename();
+    void commitInlineRename();
+    void cancelInlineRename();
+
     void applyZoomIndex(int idx);
     void openRootFolderDialog();
     void openLoadWavDialog();
-    void openExportNm6Dialog();
+    void openExportNm6Dialog(bool forceSaveAs);
     void rescanRootDirectory();
 
     WreckageController* controller_ = nullptr;
     HWND hwnd_ = nullptr;
+    HWND renameEdit_ = nullptr;
+    int renamingSlot_ = -1;
+
     ID2D1Factory* d2dFactory_ = nullptr;
     IDWriteFactory* dwFactory_ = nullptr;
     ID2D1HwndRenderTarget* rt_ = nullptr;
     ID2D1SolidColorBrush* brush_ = nullptr;
 
-#if !WRECKAGE_IS_PLAYER
-    int activeTab_ = 0;
-#else
-    int activeTab_ = 1;
-#endif
-    int activeBank_ = 0;
+    int activeTab_ = 0;         // 0: SOURCE, 1: STAGE, 2: MASTER FX
+    int stageSubMode_ = 0;      // 0: DRUM (Per-Drum Faders), 1: MIX (4-Mic Faders)
+    bool stageGridSnap_ = true; // Snap-to-grid on Stage
+    bool followMidi_ = true;    // Auto-select slot when MIDI/Key pressed
+    int activeBank_ = 0;        // 0: C3-B3, 1: C4-B4, 2: C5-B5
     int selectedSlot_ = 0;
     int keyboardOctaveOffset_ = 0;
     bool browserOpen_ = false;
+    bool settingsOpen_ = false;
     int activePressedNote_ = -1;
     int dragTarget_ = 0;
 
     std::vector<std::wstring> browserCategories_;
     std::vector<std::wstring> browserItems_;
-    int selectedCategory_ = 0;
+    int selectedCategory_ = -1;
 
     float uiScale_ = 0.75f;
 };

@@ -3,6 +3,7 @@
 #include "../core/wreckage_params.h"
 #include "../core/wreckage_themes.h"
 #include <array>
+#include <cstdint>
 #include <string>
 
 namespace NoiseMu6ix {
@@ -14,6 +15,8 @@ struct UiSlotMirror {
     bool hasCustomColor = false;
     float gain = 0.56f;
     float pitch = 0.5f;
+    float toneLow = 0.5f;
+    float toneHigh = 0.5f;
     float attack = 0.0f;
     float release = 0.15f;
     float xfade = 0.0f;
@@ -47,21 +50,42 @@ public:
 
     void uiSetParam(Steinberg::Vst::ParamID id, double normVal, bool beginEnd = true);
     void uiTriggerNote(int midiNote, float vel, bool isOn);
+    void uiPanic();
+    void uiResetStage();
     void uiSetStageXY(int slotIdx, float x, float y);
     void uiSetKeyColor(int slotIdx, uint32_t rgb);
+    void uiRenameSlot(int slotIdx, const std::string& newName);
     void uiCycleSmartMode(int slotIdx, int which);
     void uiSetSlotProp(int slotIdx, int prop, int ival, double fval);
     void uiLoadWavFile(int slotIdx, const std::wstring& widePath);
     void uiExportNm6File(const std::wstring& widePath);
+    void uiLoadNm6File(const std::wstring& widePath);
 
     UiSlotMirror& slotMirror(int idx) { return slots_[idx % kTotalSlots]; }
     std::wstring& rootLibraryDir() { return rootLibraryDir_; }
+    std::wstring& lastSavedNm6Path() { return lastSavedNm6Path_; }
     std::string& activePresetName() { return activePresetName_; }
+
+    int liveVoices() const { return liveVoices_; }
+    uint64_t liveRamBytes() const { return liveRamBytes_; }
+    bool isMidiNoteLive(int note) const {
+        if (note < 0 || note >= 128) return false;
+        uint64_t mask = (note < 64) ? notesLo_ : notesHi_;
+        return ((mask >> (note & 63)) & 1ULL) != 0;
+    }
+    int saveFlashTicks() const { return saveFlashTicks_; }
+    void decSaveFlash() { if (saveFlashTicks_ > 0) --saveFlashTicks_; }
 
 private:
     std::array<UiSlotMirror, kTotalSlots> slots_;
     std::wstring rootLibraryDir_;
-    std::string activePresetName_ = "BUILT-IN EPIC KIT";
+    std::wstring lastSavedNm6Path_;
+    std::string activePresetName_ = "EMPTY KIT (LOAD WAV)";
+    int liveVoices_ = 0;
+    uint64_t liveRamBytes_ = 0;
+    uint64_t notesLo_ = 0;
+    uint64_t notesHi_ = 0;
+    int saveFlashTicks_ = 0;
 };
 
 } // namespace NoiseMu6ix
