@@ -1,0 +1,8 @@
+#pragma once
+#define WRECKAGE_VERSION_MAJOR @WRECKAGE_VER_MAJOR@
+#define WRECKAGE_VERSION_MINOR @WRECKAGE_VER_MINOR@
+#define WRECKAGE_VERSION_PATCH @WRECKAGE_VER_PATCH@
+#define WRECKAGE_VERSION_STR   "@WRECKAGE_VER_STRING@"
+#define WRECKAGE_VENDOR_STR    "Noise Mu6ix Studio"
+#define WRECKAGE_URL_STR       "https://noisemu6ix.studio"
+#define WRECKAGE_EMAIL_STR     "mailto:support@noisemu6ix.studio"
