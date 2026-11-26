@@ -40,6 +40,10 @@ struct UiSlotMirror {
     bool purged = false;
     int activeVelLayers = 1;
     std::array<int, kMaxVelLayers> rrCounts{{0, 0, 0, 0}};
+    int rrCountInLayer(int velLayerIdx) const {
+        int v = (velLayerIdx < 0) ? 0 : ((velLayerIdx >= kMaxVelLayers) ? (kMaxVelLayers - 1) : velLayerIdx);
+        return rrCounts[v];
+    }
     std::array<UiVelLayerMirror, kMaxVelLayers> velLayers;
 
     bool hasAnySample() const {

@@ -427,7 +427,7 @@ void WreckageWinView::drawSourceTab(const ThemePalette& th) {
     int actVl = controller_->liveActiveVelLayer();
     int actRr = controller_->liveActiveRR();
     if (actVl >= 0 && actVl < kMaxVelLayers && actRr >= 0 && actRr < kMaxRoundRobins) {
-        if (controller_->isNotePlaying(sl.midiNote) || activePressedNote_ == sl.midiNote) {
+        if (controller_->isMidiNoteLive(sl.midiNote) || activePressedNote_ == sl.midiNote) {
             selectedVelLayer_ = actVl;
             selectedRR_ = actRr;
         }
