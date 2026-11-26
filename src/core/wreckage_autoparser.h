@@ -32,13 +32,13 @@ public:
         std::smatch m;
         static const std::regex velRe(R"((?:^|[\s_\-])(?:vel|v)0*([1-9][0-9]?)(?:$|[\s_\-]))");
         if (std::regex_search(lower, m, velRe)) {
-            meta.velocityIndex = std::max(0, std::stoi(m[1].str()) - 1);
+            meta.velocityIndex = std::clamp(std::stoi(m[1].str()) - 1, 0, kMaxVelLayers - 1);
             meta.hasExplicitVel = true;
         }
 
         static const std::regex rrRe(R"((?:^|[\s_\-])(?:rr|robin|r)0*([1-9][0-9]?)(?:$|[\s_\-]))");
         if (std::regex_search(lower, m, rrRe)) {
-            meta.rrIndex = std::max(0, std::stoi(m[1].str()) - 1);
+            meta.rrIndex = std::clamp(std::stoi(m[1].str()) - 1, 0, kMaxRoundRobins - 1);
             meta.hasExplicitRR = true;
         }
 

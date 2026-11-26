@@ -4,7 +4,7 @@
 namespace NoiseMu6ix {
 
 enum ParamIDs : uint32_t {
-    // 4-Bus Mixer Horizontal Faders (0.0 .. 1.0)
+    // 4-Bus Mixer Faders (normalized 0..1 mapped to -60.0 dB .. +6.0 dB with 0.0 dB center)
     kParamBusCloseGain   = 100,
     kParamBusRoomGain    = 101,
     kParamBusHallGain    = 102,
@@ -22,7 +22,7 @@ enum ParamIDs : uint32_t {
     kParamFilterCutoff   = 202,
     kParamFilterRes      = 203,
 
-    // 3-Band EQ (Pro-Q style)
+    // 3-Band EQ
     kParamEqOn           = 210,
     kParamEqLowFreq      = 211,
     kParamEqLowGain      = 212,
@@ -31,7 +31,7 @@ enum ParamIDs : uint32_t {
     kParamEqHighFreq     = 215,
     kParamEqHighGain     = 216,
 
-    // Compressor (Pro-C style)
+    // Compressor
     kParamCompOn         = 220,
     kParamCompThresh     = 221,
     kParamCompRatio      = 222,
@@ -40,13 +40,13 @@ enum ParamIDs : uint32_t {
     kParamCompKnee       = 225,
     kParamCompMakeup     = 226,
 
-    // Saturator (Saturn style — default Mix = 0.0 / 0% Dry)
+    // Saturator (default Mix = 0.0 / 0% Dry)
     kParamSatOn          = 230,
     kParamSatDrive       = 231,
     kParamSatWarmth      = 232,
     kParamSatMix         = 233,
 
-    // Delay (ValhallaDelay style)
+    // Delay
     kParamDelayOn        = 240,
     kParamDelayMode      = 241,
     kParamDelayTime      = 242,
@@ -55,7 +55,7 @@ enum ParamIDs : uint32_t {
     kParamDelayWidth     = 245,
     kParamDelayMix       = 246,
 
-    // Reverb (ValhallaVintageVerb style)
+    // Reverb
     kParamRevOn          = 250,
     kParamRevMode        = 251,
     kParamRevPreDelay    = 252,
@@ -65,7 +65,7 @@ enum ParamIDs : uint32_t {
     kParamRevHighCut     = 256,
     kParamRevMix         = 257,
 
-    // Global Master & Global Fake Mic (Fake RR & Fake Vel are Per-Key!)
+    // Global Master & Global Fake Mic (Fake RR & Fake Vel are Per-Key)
     kParamLimiterOn      = 260,
     kParamMonoBass       = 261,
     kParamVelCurve       = 262,
@@ -106,7 +106,50 @@ constexpr int kSlotsPerBank    = 12;
 constexpr int kTotalSlots      = kNumBanks * kSlotsPerBank; // 36 slots (C3..B5)
 constexpr int kBaseMidiNote    = 48; // C3
 constexpr int kMaxVoices       = 128;
+constexpr int kMaxRoundRobins  = 9;  // Hard limit = 9 RRs per key
+constexpr int kMaxVelLayers    = 4;  // Hard limit = 4 Velocity Layers per key
 constexpr int kBaseUiSize      = 840;
 constexpr int kWavePeakBins    = 256;
+
+// dB Gain mapping:
+// norm = 0.0 -> -60.0 dB (silent floor)
+// norm = 0.75 -> 0.0 dB (Unity gain center, generous minus range below, +6.0 dB boost above)
+// norm = 1.0 -> +6.0 dB
+inline float gainNormToDb(float norm01) {
+    float n = (norm01 < 0.0f) ? 0.0f : ((norm01 > 1.0f) ? 1.0f : norm01);
+    if (n <= 0.001f) return -60.0f;
+    if (n <= 0.75f) {
+        float u = n / 0.75f;
+        return -60.0f + u * 60.0f;
+    }
+    float u = (n - 0.75f) / 0.25f;
+    return u * 6.0f;
+}
+
+inline float gainDbToNorm(float db) {
+    if (db <= -60.0f) return 0.0f;
+    if (db <= 0.0f) return ((db + 60.0f) / 60.0f) * 0.75f;
+    float u = db / 6.0f;
+    if (u > 1.0f) u = 1.0f;
+    return 0.75f + u * 0.25f;
+}
+
+inline float gainDbToLinear(float db) {
+    if (db <= -59.5f) return 0.0f;
+    float p = db / 20.0f;
+    // Fast 2^(p * log2(10)) without heavy pow overhead
+    float x = p * 3.3219280948873626f;
+    int xi = static_cast<int>(x);
+    if (x < static_cast<float>(xi)) --xi;
+    float xf = x - static_cast<float>(xi);
+    float poly = 1.0f + xf * (0.69314718f + xf * (0.24022651f + xf * 0.05550411f));
+    float scale = 1.0f;
+    if (xi >= 0) {
+        for (int i = 0; i < xi && i < 16; ++i) scale *= 2.0f;
+    } else {
+        for (int i = 0; i < -xi && i < 24; ++i) scale *= 0.5f;
+    }
+    return scale * poly;
+}
 
 } // namespace NoiseMu6ix

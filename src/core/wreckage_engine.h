@@ -44,13 +44,18 @@ struct MultiMicSample {
     }
 };
 
+struct VelocityLayer {
+    std::vector<MultiMicSample> rrs; // Max kMaxRoundRobins (9) per velocity layer
+    int lastRRIdx = -1;
+};
+
 struct SlotConfig {
     std::string name = "EMPTY";
     int midiNote = kBaseMidiNote;
     uint32_t keyColor = 0;
     bool hasCustomColor = false;
 
-    float gain = 0.80f;
+    float gain = 1.0f; // Linear 1.0f = 0.0 dB
     float pitchSemitones = 0.0f;
     float toneLowDb = 0.0f;
     float toneHighDb = 0.0f;
@@ -69,17 +74,30 @@ struct SlotConfig {
     float stageX = 0.0f;
     float stageY = 0.0f;
 
-    std::vector<MultiMicSample> items;
-    int lastRRIdx = -1;
+    std::array<VelocityLayer, kMaxVelLayers> velLayers; // Max 4 velocity layers
     int fakeRRStep = 0;
 
     bool hasAnySample() const {
-        for (const auto& it : items)
-            if (it.realMicCount() > 0) return true;
+        for (int v = 0; v < kMaxVelLayers; ++v) {
+            for (const auto& it : velLayers[v].rrs) {
+                if (it.realMicCount() > 0) return true;
+            }
+        }
         return false;
     }
 
-    int itemCount() const { return static_cast<int>(items.size()); }
+    int activeVelLayerCount() const {
+        int lastActive = 0;
+        for (int v = 0; v < kMaxVelLayers; ++v) {
+            if (!velLayers[v].rrs.empty()) lastActive = v + 1;
+        }
+        return std::max(1, lastActive);
+    }
+
+    int rrCountInLayer(int velLayerIdx) const {
+        int vl = std::clamp(velLayerIdx, 0, kMaxVelLayers - 1);
+        return static_cast<int>(velLayers[vl].rrs.size());
+    }
 };
 
 struct Voice {
@@ -87,7 +105,8 @@ struct Voice {
     bool releasing = false;
     bool choking = false;
     int slotIndex = 0;
-    int itemIndex = 0;
+    int velLayerIndex = 0;
+    int rrIndex = 0;
     int midiNote = 0;
     int chokeGroup = 0;
     bool reverse = false;
@@ -110,7 +129,6 @@ struct Voice {
     float envVal = 0.0f;
     float attackInc = 1.0f;
     float releaseDec = 0.001f;
-    double totalDurationFrames = 0.0;
     double releaseStartFrame = 0.0;
     float chokeFade = 1.0f;
     float chokeDec = 0.004f;
@@ -135,7 +153,7 @@ struct Voice {
 };
 
 struct EngineParams {
-    float busGain[4]   = { 0.85f, 0.50f, 0.45f, 0.55f };
+    float busGain[4]   = { 1.0f, 1.0f, 1.0f, 1.0f }; // 1.0f = 0.0 dB default
     bool  busBypass[4] = { false, false, false, false };
 
     bool  globalFakeMic = true;
@@ -172,12 +190,15 @@ public:
         std::lock_guard<std::mutex> lock(stateMutex_);
         for (auto& v : voices_) v.active = false;
         for (int i = 0; i < kTotalSlots; ++i) {
-            slots_[i].items.clear();
+            for (int vl = 0; vl < kMaxVelLayers; ++vl) {
+                slots_[i].velLayers[vl].rrs.clear();
+                slots_[i].velLayers[vl].lastRRIdx = -1;
+            }
             slots_[i].name = "EMPTY";
             slots_[i].hasCustomColor = false;
             slots_[i].stageX = 0.0f;
             slots_[i].stageY = 0.0f;
-            slots_[i].gain = 0.80f;
+            slots_[i].gain = 1.0f;
             slots_[i].pitchSemitones = 0.0f;
             slots_[i].toneLowDb = 0.0f;
             slots_[i].toneHighDb = 0.0f;
@@ -193,7 +214,10 @@ public:
     void clearSlot(int idx) {
         std::lock_guard<std::mutex> lock(stateMutex_);
         auto& s = slot(idx);
-        s.items.clear();
+        for (int vl = 0; vl < kMaxVelLayers; ++vl) {
+            s.velLayers[vl].rrs.clear();
+            s.velLayers[vl].lastRRIdx = -1;
+        }
         s.name = "EMPTY";
         s.hasCustomColor = false;
         s.stageX = 0.0f;
@@ -201,16 +225,18 @@ public:
         s.purged = false;
     }
 
-    void deleteWaveItem(int slotIdx, int itemIdx) {
+    void deleteWaveItem(int slotIdx, int velLayerIdx, int rrIdx) {
         std::lock_guard<std::mutex> lock(stateMutex_);
         for (auto& v : voices_) {
             if (v.active && v.slotIndex == slotIdx) v.active = false;
         }
         auto& s = slot(slotIdx);
-        if (itemIdx >= 0 && itemIdx < static_cast<int>(s.items.size())) {
-            s.items.erase(s.items.begin() + itemIdx);
-            s.lastRRIdx = -1;
-            if (s.items.empty()) {
+        int vl = std::clamp(velLayerIdx, 0, kMaxVelLayers - 1);
+        auto& rrs = s.velLayers[vl].rrs;
+        if (rrIdx >= 0 && rrIdx < static_cast<int>(rrs.size())) {
+            rrs.erase(rrs.begin() + rrIdx);
+            s.velLayers[vl].lastRRIdx = -1;
+            if (!s.hasAnySample()) {
                 s.name = "EMPTY";
                 s.hasCustomColor = false;
                 s.stageX = 0.0f;
@@ -246,32 +272,36 @@ public:
     float currentGrDb() const { return masterFx_.currentGrDb(); }
     float currentOutLevel() const { return masterFx_.currentOutLevel(); }
 
-    // Returns playhead normalized position (0..1) if slotIdx is currently playing, else -1.0f
-    float getSlotPlayheadNorm(int slotIdx) {
+    void getSlotLivePlayback(int slotIdx, float& outPlayheadNorm, int& outActiveVelLayer, int& outActiveRR) {
         std::unique_lock<std::mutex> lock(stateMutex_, std::try_to_lock);
-        if (!lock.owns_lock()) return -1.0f;
+        outPlayheadNorm = -1.0f;
+        outActiveVelLayer = -1;
+        outActiveRR = -1;
+        if (!lock.owns_lock()) return;
         uint64_t latestAge = 0;
-        float posNorm = -1.0f;
         for (const auto& v : voices_) {
             if (v.active && v.slotIndex == slotIdx && v.primaryBuf && v.age >= latestAge) {
                 latestAge = v.age;
+                outActiveVelLayer = v.velLayerIndex;
+                outActiveRR = v.rrIndex;
                 double totalF = static_cast<double>(v.primaryBuf->numFrames());
                 if (totalF > 1.0) {
                     double actualFrame = v.reverse ? (totalF - 1.0 - v.playPos) : v.playPos;
-                    posNorm = std::clamp(static_cast<float>(actualFrame / totalF), 0.0f, 1.0f);
+                    outPlayheadNorm = std::clamp(static_cast<float>(actualFrame / totalF), 0.0f, 1.0f);
                 }
             }
         }
-        return posNorm;
     }
 
     uint64_t totalSampleRamBytes() const {
         uint64_t bytes = 0;
         for (const auto& s : slots_) {
-            for (const auto& it : s.items) {
-                for (int m = 0; m < 4; ++m) {
-                    if (it.mics[static_cast<size_t>(m)])
-                        bytes += it.mics[static_cast<size_t>(m)]->numFrames() * 2 * sizeof(float);
+            for (int vl = 0; vl < kMaxVelLayers; ++vl) {
+                for (const auto& it : s.velLayers[vl].rrs) {
+                    for (int m = 0; m < 4; ++m) {
+                        if (it.mics[static_cast<size_t>(m)])
+                            bytes += it.mics[static_cast<size_t>(m)]->numFrames() * 2 * sizeof(float);
+                    }
                 }
             }
         }
@@ -290,7 +320,8 @@ public:
         activeVoices_.store(0, std::memory_order_relaxed);
     }
 
-    bool loadSampleIntoSlot(int slotIdx, const std::filesystem::path& filePath) {
+    // Loads sample respecting Max 4 Velocity Layers and Max 9 Round-Robins per layer
+    bool loadSampleIntoSlot(int slotIdx, const std::filesystem::path& filePath, int preferredVelLayer = -1) {
         auto buf = std::make_shared<AudioBuffer>();
         if (!WavLoader::loadFromFile(filePath, *buf)) return false;
 
@@ -301,18 +332,33 @@ public:
         auto& s = slot(slotIdx);
         bool firstLoad = !s.hasAnySample();
 
+        int vl = 0;
+        if (meta.hasExplicitVel) {
+            vl = std::clamp(meta.velocityIndex, 0, kMaxVelLayers - 1);
+        } else if (preferredVelLayer >= 0) {
+            vl = std::clamp(preferredVelLayer, 0, kMaxVelLayers - 1);
+        }
+
+        auto& rrs = s.velLayers[vl].rrs;
         int targetIdx = -1;
         if (meta.hasExplicitMic && meta.mic != MicBus::Close) {
-            int desiredRR = meta.hasExplicitRR ? meta.rrIndex : std::max(0, static_cast<int>(s.items.size()) - 1);
-            if (desiredRR < static_cast<int>(s.items.size()) && !s.items[static_cast<size_t>(desiredRR)].hasMic(meta.mic)) {
+            int desiredRR = meta.hasExplicitRR ? meta.rrIndex : std::max(0, static_cast<int>(rrs.size()) - 1);
+            desiredRR = std::clamp(desiredRR, 0, kMaxRoundRobins - 1);
+            if (desiredRR < static_cast<int>(rrs.size()) && !rrs[static_cast<size_t>(desiredRR)].hasMic(meta.mic)) {
                 targetIdx = desiredRR;
             }
         }
         if (targetIdx < 0) {
-            s.items.emplace_back();
-            targetIdx = static_cast<int>(s.items.size()) - 1;
+            if (static_cast<int>(rrs.size()) >= kMaxRoundRobins) {
+                return false; // Hard limit of 9 RRs per velocity layer
+            }
+            MultiMicSample mm;
+            mm.velMin = static_cast<float>(vl) / static_cast<float>(kMaxVelLayers);
+            mm.velMax = static_cast<float>(vl + 1) / static_cast<float>(kMaxVelLayers);
+            rrs.push_back(std::move(mm));
+            targetIdx = static_cast<int>(rrs.size()) - 1;
         }
-        s.items[static_cast<size_t>(targetIdx)].mics[static_cast<size_t>(meta.mic)] = buf;
+        rrs[static_cast<size_t>(targetIdx)].mics[static_cast<size_t>(meta.mic)] = buf;
 
         if (s.name == "EMPTY") s.name = meta.cleanInstrumentName;
         if (!s.hasCustomColor) {
@@ -367,7 +413,7 @@ public:
         std::lock_guard<std::mutex> lock(stateMutex_);
         Nm6Pack pack;
         pack.libraryName = libName;
-        std::string json = "{\"format\":2,\"slots\":[";
+        std::string json = "{\"format\":3,\"slots\":[";
         for (int i = 0; i < kTotalSlots; ++i) {
             const auto& s = slots_[i];
             if (i > 0) json += ",";
@@ -379,18 +425,20 @@ public:
                     ",\"y\":" + std::to_string(s.stageY) +
                     ",\"s\":[";
             bool firstSamp = true;
-            for (size_t r = 0; r < s.items.size(); ++r) {
-                const auto& it = s.items[r];
-                for (int mic = 0; mic < 4; ++mic) {
-                    const auto& ptr = it.mics[static_cast<size_t>(mic)];
-                    if (!ptr || ptr->empty()) continue;
-                    uint32_t sid = pack.addOrFindSample(*ptr);
-                    if (!firstSamp) json += ",";
-                    firstSamp = false;
-                    json += "[" + std::to_string(r) + "," + std::to_string(mic) + "," + std::to_string(sid) + "," +
-                            std::to_string(it.startNorm) + "," + std::to_string(it.endNorm) + "," +
-                            std::to_string(it.fadeInNorm) + "," + std::to_string(it.fadeOutNorm) + "," +
-                            std::to_string(it.velMin) + "," + std::to_string(it.velMax) + "]";
+            for (int vl = 0; vl < kMaxVelLayers; ++vl) {
+                const auto& rrs = s.velLayers[vl].rrs;
+                for (size_t r = 0; r < rrs.size(); ++r) {
+                    const auto& it = rrs[r];
+                    for (int mic = 0; mic < 4; ++mic) {
+                        const auto& ptr = it.mics[static_cast<size_t>(mic)];
+                        if (!ptr || ptr->empty()) continue;
+                        uint32_t sid = pack.addOrFindSample(*ptr);
+                        if (!firstSamp) json += ",";
+                        firstSamp = false;
+                        json += "[" + std::to_string(vl) + "," + std::to_string(r) + "," + std::to_string(mic) + "," +
+                                std::to_string(sid) + "," + std::to_string(it.startNorm) + "," + std::to_string(it.endNorm) + "," +
+                                std::to_string(it.fadeInNorm) + "," + std::to_string(it.fadeOutNorm) + "]";
+                    }
                 }
             }
             json += "]}";
@@ -413,7 +461,10 @@ public:
         std::lock_guard<std::mutex> lock(stateMutex_);
         for (auto& v : voices_) v.active = false;
         for (int i = 0; i < kTotalSlots; ++i) {
-            slots_[i].items.clear();
+            for (int vl = 0; vl < kMaxVelLayers; ++vl) {
+                slots_[i].velLayers[vl].rrs.clear();
+                slots_[i].velLayers[vl].lastRRIdx = -1;
+            }
             slots_[i].name = "EMPTY";
             slots_[i].hasCustomColor = false;
             slots_[i].stageX = 0.0f;
@@ -450,17 +501,17 @@ public:
                 if (sArr != std::string::npos) {
                     size_t p = sArr + 5;
                     while ((p = chunk.find('[', p)) != std::string::npos) {
-                        int r = 0, mic = 0, sid = 0;
-                        float st = 0.0f, en = 1.0f, fi = 0.0f, fo = 0.0f, vmin = 0.0f, vmax = 1.0f;
-                        if (std::sscanf(chunk.c_str() + p, "[%d,%d,%d,%f,%f,%f,%f,%f,%f]",
-                                        &r, &mic, &sid, &st, &en, &fi, &fo, &vmin, &vmax) >= 3) {
-                            if (r >= 0 && mic >= 0 && mic < 4 &&
-                                sid >= 0 && static_cast<size_t>(sid) < decoded.size() && decoded[sid]) {
-                                if (static_cast<int>(s.items.size()) <= r) s.items.resize(static_cast<size_t>(r + 1));
-                                auto& it = s.items[static_cast<size_t>(r)];
+                        int vl = 0, r = 0, mic = 0, sid = 0;
+                        float st = 0.0f, en = 1.0f, fi = 0.0f, fo = 0.0f;
+                        if (std::sscanf(chunk.c_str() + p, "[%d,%d,%d,%d,%f,%f,%f,%f]",
+                                        &vl, &r, &mic, &sid, &st, &en, &fi, &fo) >= 4) {
+                            if (vl >= 0 && vl < kMaxVelLayers && r >= 0 && r < kMaxRoundRobins &&
+                                mic >= 0 && mic < 4 && sid >= 0 && static_cast<size_t>(sid) < decoded.size() && decoded[sid]) {
+                                auto& rrs = s.velLayers[vl].rrs;
+                                if (static_cast<int>(rrs.size()) <= r) rrs.resize(static_cast<size_t>(r + 1));
+                                auto& it = rrs[static_cast<size_t>(r)];
                                 it.mics[static_cast<size_t>(mic)] = decoded[sid];
                                 it.startNorm = st; it.endNorm = en; it.fadeInNorm = fi; it.fadeOutNorm = fo;
-                                it.velMin = vmin; it.velMax = vmax;
                             }
                         }
                         p = chunk.find(']', p);
@@ -477,10 +528,10 @@ public:
     void process(ProcessBuffers& pb) {
         if (!pb.mainL || !pb.mainR || pb.numSamples <= 0) return;
 
-        bool runClose = !params_.busBypass[0] && params_.busGain[0] > 0.001f;
-        bool runRoom  = !params_.busBypass[1] && params_.busGain[1] > 0.001f;
-        bool runHall  = !params_.busBypass[2] && params_.busGain[2] > 0.001f;
-        bool runSub   = !params_.busBypass[3] && params_.busGain[3] > 0.001f;
+        bool runClose = !params_.busBypass[0] && params_.busGain[0] > 0.0001f;
+        bool runRoom  = !params_.busBypass[1] && params_.busGain[1] > 0.0001f;
+        bool runHall  = !params_.busBypass[2] && params_.busGain[2] > 0.0001f;
+        bool runSub   = !params_.busBypass[3] && params_.busGain[3] > 0.0001f;
 
         std::unique_lock<std::mutex> lock(stateMutex_, std::try_to_lock);
         if (!lock.owns_lock() && !pb.offlineRender) {
@@ -504,7 +555,6 @@ public:
                     if (v.chokeFade <= 0.0f) { v.active = false; continue; }
                 }
 
-                // Region bounds
                 double regionLen = std::max(8.0, v.endFrame - v.startFrame);
                 double relPos = v.playPos - v.startFrame;
                 if (relPos < 0.0 || relPos >= regionLen) {
@@ -512,7 +562,6 @@ public:
                     continue;
                 }
 
-                // Smooth Attack & Release (works cleanly for both One-Shot and Gate modes!)
                 if (!v.releasing) {
                     v.envVal = std::min(1.0f, v.envVal + v.attackInc);
                     if (v.oneShot && relPos >= v.releaseStartFrame) {
@@ -524,11 +573,10 @@ public:
                     if (v.envVal <= 0.0001f) { v.active = false; continue; }
                 }
 
-                // Wave Editor Fade-In & Fade-Out envelope
                 float waveEnv = 1.0f;
                 if (v.fadeInFrames > 1.0 && relPos < v.fadeInFrames) {
                     float tIn = static_cast<float>(relPos / v.fadeInFrames);
-                    waveEnv *= tIn * tIn; // Smooth curve
+                    waveEnv *= tIn * tIn;
                 }
                 double rem = regionLen - relPos;
                 if (v.fadeOutFrames > 1.0 && rem < v.fadeOutFrames) {
@@ -679,9 +727,30 @@ private:
         return true;
     }
 
+    int selectVelocityLayer(const SlotConfig& s, float shapedVel) const {
+        std::vector<int> populated;
+        for (int vl = 0; vl < kMaxVelLayers; ++vl) {
+            if (!s.velLayers[vl].rrs.empty()) populated.push_back(vl);
+        }
+        if (populated.empty()) return 0;
+        if (populated.size() == 1) return populated[0];
+
+        int bucket = std::clamp(static_cast<int>(shapedVel * static_cast<float>(kMaxVelLayers)), 0, kMaxVelLayers - 1);
+        if (!s.velLayers[bucket].rrs.empty()) return bucket;
+
+        // Nearest populated layer fallback
+        int bestVl = populated[0];
+        int bestDist = std::abs(bestVl - bucket);
+        for (int vl : populated) {
+            int d = std::abs(vl - bucket);
+            if (d < bestDist) { bestDist = d; bestVl = vl; }
+        }
+        return bestVl;
+    }
+
     void spawnVoice(int slotIdx, int midiNote, float vel) {
         auto& s = slots_[slotIdx];
-        if (s.items.empty()) return;
+        if (!s.hasAnySample()) return;
 
         Voice* target = nullptr;
         uint64_t oldestAge = UINT64_MAX;
@@ -691,22 +760,25 @@ private:
         }
         if (!target) return;
 
-        int numItems = static_cast<int>(s.items.size());
-        int chosenIdx = 0;
-        if (numItems == 2) {
-            chosenIdx = (s.lastRRIdx == 0) ? 1 : 0;
-        } else if (numItems > 2) {
+        int vlIdx = selectVelocityLayer(s, vel);
+        auto& layer = s.velLayers[vlIdx];
+        int numRRs = static_cast<int>(layer.rrs.size());
+        if (numRRs <= 0) return;
+
+        int chosenRR = 0;
+        if (numRRs == 2) {
+            chosenRR = (layer.lastRRIdx == 0) ? 1 : 0;
+        } else if (numRRs > 2) {
             rngState_ = rngState_ * 1664525u + 1013904223u;
-            int pick = static_cast<int>((rngState_ >> 16) % static_cast<uint32_t>(numItems));
-            chosenIdx = (pick == s.lastRRIdx) ? ((pick + 1) % numItems) : pick;
+            int pick = static_cast<int>((rngState_ >> 16) % static_cast<uint32_t>(numRRs));
+            chosenRR = (pick == layer.lastRRIdx) ? ((pick + 1) % numRRs) : pick;
         }
-        s.lastRRIdx = chosenIdx;
-        const auto& mm = s.items[static_cast<size_t>(chosenIdx)];
+        layer.lastRRIdx = chosenRR;
+        const auto& mm = layer.rrs[static_cast<size_t>(chosenRR)];
         auto prim = mm.primarySource();
         if (!prim) return;
 
-        // Per-key Fake RR & Fake Vel + Global Fake Mic
-        float rrStrength  = s.fakeRR  ? ((numItems <= 2) ? 1.0f : 0.45f) : 0.0f;
+        float rrStrength  = s.fakeRR  ? ((numRRs <= 2) ? 1.0f : 0.45f) : 0.0f;
         float velStrength = s.fakeVel ? 1.0f : 0.0f;
         bool enableFakeMics = params_.globalFakeMic;
 
@@ -715,7 +787,8 @@ private:
         v.releasing = false;
         v.choking = false;
         v.slotIndex = slotIdx;
-        v.itemIndex = chosenIdx;
+        v.velLayerIndex = vlIdx;
+        v.rrIndex = chosenRR;
         v.midiNote = midiNote;
         v.chokeGroup = s.chokeGroup;
         v.reverse = s.reverse;
@@ -778,7 +851,6 @@ private:
 
         v.velGain = std::pow(vel, 1.35f);
 
-        // Accurate Attack & Release envelope (One-Shot uses Release as total decay tail from hit start)
         float extraAttackMs = (velStrength > 0.01f) ? ((1.0f - vel) * 8.5f * velStrength) : 0.0f;
         float totalAttackMs = std::max(0.2f, s.attackMs + extraAttackMs);
         double attSamples = sr_ * totalAttackMs * 0.001;
@@ -788,7 +860,7 @@ private:
         v.releaseDec = static_cast<float>(1.0 / relSamples);
         v.releaseStartFrame = std::max(attSamples * 0.5, relSamples * 0.25);
         if (s.releaseMs >= 3800.0f) {
-            v.releaseStartFrame = regLen + 1000.0; // Full sample length when Release is maxed
+            v.releaseStartFrame = regLen + 1000.0;
         }
         v.envVal = (attSamples <= 1.0) ? 1.0f : 0.0f;
 

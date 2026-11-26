@@ -9,6 +9,27 @@ namespace NoiseMu6ix {
 
 constexpr float kPi = 3.14159265358979323846f;
 
+inline float fastExp(float x) {
+    if (x < -12.0f) return 0.0f;
+    if (x > 12.0f) x = 12.0f;
+    float y = x * 1.4426950408889634f;
+    int yi = static_cast<int>(y);
+    if (y < static_cast<float>(yi)) --yi;
+    float yf = y - static_cast<float>(yi);
+    float poly = 1.0f + yf * (0.69314718f + yf * (0.24022651f + yf * 0.05550411f));
+    float sc = 1.0f;
+    if (yi >= 0) {
+        for (int i = 0; i < yi && i < 16; ++i) sc *= 2.0f;
+    } else {
+        for (int i = 0; i < -yi && i < 24; ++i) sc *= 0.5f;
+    }
+    return sc * poly;
+}
+
+inline float fastPow10(float p) {
+    return fastExp(p * 2.302585092994046f);
+}
+
 inline float fastTanh(float x) {
     if (x < -3.0f) return -1.0f;
     if (x >  3.0f) return  1.0f;
@@ -19,7 +40,7 @@ inline float fastTanh(float x) {
 struct DCBlocker {
     float x1 = 0.0f, y1 = 0.0f;
     float r = 0.9965f;
-    void setSampleRate(float sr) { r = std::exp(-2.0f * kPi * 20.0f / std::max(8000.0f, sr)); }
+    void setSampleRate(float sr) { r = fastExp(-2.0f * kPi * 20.0f / std::max(8000.0f, sr)); }
     void reset() { x1 = y1 = 0.0f; }
     inline float process(float x) {
         float y = x - x1 + r * y1;
@@ -88,7 +109,7 @@ struct Biquad {
 
     void setPeaking(float sr, float freq, float q, float gainDb) {
         freq = std::clamp(freq, 25.0f, sr * 0.45f);
-        float A = std::pow(10.0f, gainDb / 40.0f);
+        float A = fastPow10(gainDb / 40.0f);
         float w0 = 2.0f * kPi * freq / sr;
         float c = std::cos(w0), s = std::sin(w0);
         float alpha = s / (2.0f * std::max(0.2f, q));
@@ -139,7 +160,7 @@ public:
             int len = std::clamp(static_cast<int>(sr_ * baseMs[i] * sizeScale * 0.001f), 32, maxL);
             activeLen_[i] = len;
             if (idx_[i] >= len) idx_[i] = 0;
-            fb_[i] = std::clamp(std::pow(10.0f, (-3.0f * (static_cast<float>(len) / sr_)) / rt), 0.25f, 0.975f);
+            fb_[i] = std::clamp(fastPow10((-3.0f * (static_cast<float>(len) / sr_)) / rt), 0.25f, 0.975f);
         }
         dampCoeff_ = std::clamp(1.0f - (lpHz / (sr_ * 0.5f)), 0.10f, 0.85f);
         if (std::fabs(hpHz - lastHp_) > 1.0f) { hpL_.setHighPass(sr_, hpHz); hpR_.setHighPass(sr_, hpHz); lastHp_ = hpHz; }
@@ -332,7 +353,7 @@ public:
         monoBassL_.setLowPass(sr_, 120.0f); monoBassR_.setLowPass(sr_, 120.0f);
         delayBus_.prepare(sr_);
         masterRevBus_.prepare(sr_, 18.0f, 2.4f, 120.0f, 8500.0f);
-        limRel_ = std::exp(-1.0f / (sr_ * 0.045f));
+        limRel_ = fastExp(-1.0f / (sr_ * 0.045f));
         lastFiltHash_ = -1.0f;
         lastEqHash_ = -1.0f;
     }
@@ -391,8 +412,8 @@ public:
         }
 
         if (p.compOn) {
-            float att = std::exp(-1.0f / (sr_ * std::max(0.5f, p.compAttackMs) * 0.001f));
-            float rel = std::exp(-1.0f / (sr_ * std::max(10.0f, p.compReleaseMs) * 0.001f));
+            float att = fastExp(-1.0f / (sr_ * std::max(0.5f, p.compAttackMs) * 0.001f));
+            float rel = fastExp(-1.0f / (sr_ * std::max(10.0f, p.compReleaseMs) * 0.001f));
             float det = std::max(std::fabs(l), std::fabs(r));
             compEnv_ = (det > compEnv_) ? (att * compEnv_ + (1.0f - att) * det)
                                         : (rel * compEnv_ + (1.0f - rel) * det);
@@ -407,7 +428,7 @@ public:
                 grDb = effOver * (1.0f - 1.0f / std::max(1.0f, p.compRatio));
             }
             lastGrDb_ = grDb;
-            float totalGain = std::pow(10.0f, (-grDb + p.compMakeupDb) / 20.0f);
+            float totalGain = fastPow10((-grDb + p.compMakeupDb) / 20.0f);
             l *= totalGain; r *= totalGain;
         } else {
             lastGrDb_ = 0.0f;
