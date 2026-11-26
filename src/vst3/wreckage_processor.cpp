@@ -168,8 +168,22 @@ tresult PLUGIN_API WreckageProcessor::process(ProcessData& data) {
             if (data.inputEvents->getEvent(i, ev) == kResultOk) {
                 if (ev.type == Event::kNoteOnEvent) {
                     hadMidiEvent = true;
-                    if (ev.noteOn.velocity > 0.0f) engine_.triggerNoteOn(ev.noteOn.pitch, ev.noteOn.velocity);
-                    else engine_.triggerNoteOff(ev.noteOn.pitch);
+                    if (ev.noteOn.velocity > 0.0f) {
+                        engine_.triggerNoteOn(ev.noteOn.pitch, ev.noteOn.velocity);
+                        lastMidiNote_ = ev.noteOn.pitch;
+                        ++midiNoteSeq_;
+                        int pNote = std::clamp<int>(ev.noteOn.pitch, 0, 127);
+                        if (pNote < 64) midiHitPulseLo_ |= (1ULL << pNote);
+                        else midiHitPulseHi_ |= (1ULL << (pNote - 64));
+                        for (int s = 0; s < kTotalSlots; ++s) {
+                            if (engine_.slot(s).midiNote == ev.noteOn.pitch) {
+                                selectedUiSlot_ = s;
+                                break;
+                            }
+                        }
+                    } else {
+                        engine_.triggerNoteOff(ev.noteOn.pitch);
+                    }
                 } else if (ev.type == Event::kNoteOffEvent) {
                     hadMidiEvent = true;
                     engine_.triggerNoteOff(ev.noteOff.pitch);
@@ -218,7 +232,7 @@ tresult PLUGIN_API WreckageProcessor::setState(IBStream* state) {
     if (!state) return kResultFalse;
     IBStreamer s(state, kLittleEndian);
     int32 ver = 0;
-    if (!s.readInt32(ver) || ver != 6) return kResultFalse;
+    if (!s.readInt32(ver) || (ver != 6 && ver != 7)) return kResultFalse;
 
     auto& p = engine_.params();
     auto& fx = p.fx;
@@ -235,20 +249,69 @@ tresult PLUGIN_API WreckageProcessor::setState(IBStream* state) {
     s.readInt8(b); fx.compOn = (b != 0); s.readFloat(fx.compThreshDb); s.readFloat(fx.compRatio); s.readFloat(fx.compAttackMs); s.readFloat(fx.compReleaseMs); s.readFloat(fx.compKneeDb); s.readFloat(fx.compMakeupDb);
     s.readInt8(b); fx.satOn = (b != 0); s.readFloat(fx.satDrive); s.readFloat(fx.satWarmth); s.readFloat(fx.satMix);
     s.readInt8(b); fx.delayOn = (b != 0); s.readInt32(fx.delayMode); s.readFloat(fx.delayTimeMs); s.readFloat(fx.delayFeedback); s.readFloat(fx.delayTone); s.readFloat(fx.delayWidth); s.readFloat(fx.delayMix);
-    s.readInt8(b); fx.revOn = (b != 0); s.readInt32(fx.revMode); s.readFloat(fx.revPreDelayMs); s.readFloat(fx.revDecaySec); s.readFloat(fx.revSize); s.writeFloat(fx.revLowCutHz); s.readFloat(fx.revHighCutHz); s.readFloat(fx.revMix);
+    s.readInt8(b); fx.revOn = (b != 0); s.readInt32(fx.revMode); s.readFloat(fx.revPreDelayMs); s.readFloat(fx.revDecaySec); s.readFloat(fx.revSize); s.readFloat(fx.revLowCutHz); s.readFloat(fx.revHighCutHz); s.readFloat(fx.revMix);
     s.readInt8(b); fx.limiterOn = (b != 0);
     s.readInt8(b); fx.monoBass = (b != 0);
     s.readInt32(iv); p.velCurve = static_cast<VelocityCurve>(iv);
     s.readInt8(b); fx.punishOn = (b != 0); s.readFloat(fx.punishAmount); s.readInt32(iv); fx.punishMode = static_cast<PunishMode>(iv);
     s.readInt32(p.themeIndex);
     s.readInt32(p.zoomIndex);
+    if (ver >= 7) {
+        int32 pathLen = 0;
+        if (s.readInt32(pathLen) && pathLen > 0 && pathLen < 4096) {
+            lastNm6PathUtf8_.resize(static_cast<size_t>(pathLen));
+            s.readRaw(&lastNm6PathUtf8_[0], pathLen);
+            std::error_code ec;
+            auto pPath = pathFromUtf8(lastNm6PathUtf8_);
+            if (std::filesystem::exists(pPath, ec)) {
+                engine_.loadKitFromNm6(pPath);
+            }
+        }
+        int32 nSlots = 0;
+        if (s.readInt32(nSlots) && nSlots == kTotalSlots) {
+            for (int i = 0; i < kTotalSlots; ++i) {
+                auto& sl = engine_.slot(i);
+                int32 nameLen = 0;
+                if (s.readInt32(nameLen) && nameLen > 0 && nameLen < 128) {
+                    sl.name.resize(static_cast<size_t>(nameLen));
+                    s.readRaw(&sl.name[0], nameLen);
+                }
+                int32 mn = kBaseMidiNote + i, cg = 0, col = 0; int8 hc = 0, fr = 0, fv = 0, os = 1, rv = 0, pg = 0;
+                s.readInt32(mn); sl.midiNote = mn;
+                s.readInt32(col); sl.keyColor = static_cast<uint32_t>(col);
+                s.readInt8(hc); sl.hasCustomColor = (hc != 0);
+                s.readFloat(sl.gain);
+                s.readFloat(sl.pitchSemitones);
+                s.readFloat(sl.toneLowDb);
+                s.readFloat(sl.toneHighDb);
+                s.readFloat(sl.attackMs);
+                s.readFloat(sl.releaseMs);
+                s.readInt8(fr); sl.fakeRR = (fr != 0);
+                s.readInt8(fv); sl.fakeVel = (fv != 0);
+                s.readInt8(os); sl.oneShot = (os != 0);
+                s.readInt32(cg); sl.chokeGroup = cg;
+                s.readInt8(rv); sl.reverse = (rv != 0);
+                s.readInt8(pg); sl.purged = (pg != 0);
+                s.readFloat(sl.stageX);
+                s.readFloat(sl.stageY);
+            }
+        }
+        for (int i = 0; i < kTotalSlots; ++i) {
+            broadcastSlotSummaryToUi(i);
+            for (int vl = 0; vl < kMaxVelLayers; ++vl) {
+                int nr = engine_.slot(i).rrCountInLayer(vl);
+                for (int r = 0; r < nr; ++r) broadcastWaveDataToUi(i, vl, r);
+            }
+        }
+        broadcastTelemetryToUi();
+    }
     return kResultOk;
 }
 
 tresult PLUGIN_API WreckageProcessor::getState(IBStream* state) {
     if (!state) return kResultFalse;
     IBStreamer s(state, kLittleEndian);
-    s.writeInt32(6);
+    s.writeInt32(7);
 
     const auto& p = engine_.params();
     const auto& fx = p.fx;
@@ -270,6 +333,35 @@ tresult PLUGIN_API WreckageProcessor::getState(IBStream* state) {
     s.writeInt8(fx.punishOn ? 1 : 0); s.writeFloat(fx.punishAmount); s.writeInt32(static_cast<int32>(fx.punishMode));
     s.writeInt32(p.themeIndex);
     s.writeInt32(p.zoomIndex);
+
+    int32 pathLen = static_cast<int32>(lastNm6PathUtf8_.size());
+    s.writeInt32(pathLen);
+    if (pathLen > 0) s.writeRaw(lastNm6PathUtf8_.data(), pathLen);
+
+    s.writeInt32(kTotalSlots);
+    for (int i = 0; i < kTotalSlots; ++i) {
+        const auto& sl = engine_.slot(i);
+        int32 nameLen = static_cast<int32>(sl.name.size());
+        s.writeInt32(nameLen);
+        if (nameLen > 0) s.writeRaw(sl.name.data(), nameLen);
+        s.writeInt32(sl.midiNote);
+        s.writeInt32(static_cast<int32>(sl.keyColor));
+        s.writeInt8(sl.hasCustomColor ? 1 : 0);
+        s.writeFloat(sl.gain);
+        s.writeFloat(sl.pitchSemitones);
+        s.writeFloat(sl.toneLowDb);
+        s.writeFloat(sl.toneHighDb);
+        s.writeFloat(sl.attackMs);
+        s.writeFloat(sl.releaseMs);
+        s.writeInt8(sl.fakeRR ? 1 : 0);
+        s.writeInt8(sl.fakeVel ? 1 : 0);
+        s.writeInt8(sl.oneShot ? 1 : 0);
+        s.writeInt32(sl.chokeGroup);
+        s.writeInt8(sl.reverse ? 1 : 0);
+        s.writeInt8(sl.purged ? 1 : 0);
+        s.writeFloat(sl.stageX);
+        s.writeFloat(sl.stageY);
+    }
     return kResultOk;
 }
 
@@ -285,6 +377,15 @@ void WreckageProcessor::broadcastSlotSummaryToUi(int slotIdx) {
         attrs->setFloat("y", sl.stageY);
         attrs->setInt("fakeRR", sl.fakeRR ? 1 : 0);
         attrs->setInt("fakeVel", sl.fakeVel ? 1 : 0);
+        attrs->setInt("oneShot", sl.oneShot ? 1 : 0);
+        attrs->setInt("chokeGroup", sl.chokeGroup);
+        attrs->setInt("reverse", sl.reverse ? 1 : 0);
+        attrs->setInt("purged", sl.purged ? 1 : 0);
+        float gainDb = 20.0f * std::log10(std::max(1e-6f, sl.gain));
+        attrs->setFloat("gainNorm", static_cast<double>(gainDbToNorm(gainDb)));
+        attrs->setFloat("pitchNorm", static_cast<double>(std::clamp(sl.pitchSemitones / 48.0f + 0.5f, 0.0f, 1.0f)));
+        attrs->setFloat("attackNorm", static_cast<double>(std::clamp(sl.attackMs / 200.0f, 0.0f, 1.0f)));
+        attrs->setFloat("releaseNorm", static_cast<double>(releaseMsToNorm(sl.releaseMs)));
         attrs->setInt("activeVelLayers", sl.activeVelLayerCount());
         int counts[kMaxVelLayers] = {0};
         for (int vl = 0; vl < kMaxVelLayers; ++vl) {
@@ -338,6 +439,21 @@ void WreckageProcessor::broadcastTelemetryToUi() {
         attrs->setFloat("playhead", static_cast<double>(ph));
         attrs->setInt("actVelLayer", actVl);
         attrs->setInt("actRR", actRr);
+        attrs->setInt("lastMidiNote", lastMidiNote_);
+        attrs->setInt("midiNoteSeq", static_cast<int64>(midiNoteSeq_));
+
+        int lvSlot = -1, lvVel = -1, lvRR = -1;
+        uint32_t lvSeq = 0;
+        engine_.getLastTriggeredVoice(lvSlot, lvVel, lvRR, lvSeq);
+        attrs->setInt("lvSlot", lvSlot);
+        attrs->setInt("lvVel", lvVel);
+        attrs->setInt("lvRR", lvRR);
+        attrs->setInt("lvSeq", static_cast<int64>(lvSeq));
+
+        attrs->setInt("hitPulseLo", static_cast<int64>(midiHitPulseLo_));
+        attrs->setInt("hitPulseHi", static_cast<int64>(midiHitPulseHi_));
+        midiHitPulseLo_ = 0;
+        midiHitPulseHi_ = 0;
 
         uint64_t lo = 0, hi = 0;
         for (int n = 0; n < 64; ++n) {
@@ -375,9 +491,11 @@ tresult PLUGIN_API WreckageProcessor::notify(IMessage* message) {
         int64 sl = 0, vl = 0;
         attrs->getInt("slot", sl); attrs->getInt("velLayer", vl);
         selectedUiSlot_ = std::clamp(static_cast<int>(sl), 0, kTotalSlots - 1);
-        int v = std::clamp(static_cast<int>(vl), 0, kMaxVelLayers - 1);
-        if (engine_.slot(selectedUiSlot_).rrCountInLayer(v) > 0) {
-            broadcastWaveDataToUi(selectedUiSlot_, v, 0);
+        for (int v = 0; v < kMaxVelLayers; ++v) {
+            int nRRs = engine_.slot(selectedUiSlot_).rrCountInLayer(v);
+            for (int r = 0; r < nRRs; ++r) {
+                broadcastWaveDataToUi(selectedUiSlot_, v, r);
+            }
         }
         return kResultOk;
     }
@@ -451,8 +569,14 @@ tresult PLUGIN_API WreckageProcessor::notify(IMessage* message) {
             case 0: s.gain = gainDbToLinear(gainNormToDb(static_cast<float>(fval))); break;
             case 1: s.pitchSemitones = (static_cast<float>(fval) - 0.5f) * 48.0f; break;
             case 2: s.attackMs = static_cast<float>(fval) * 200.0f; break;
-            case 3: s.releaseMs = 15.0f + static_cast<float>(fval) * 3985.0f; break;
-            case 5: s.oneShot = (ival != 0); break;
+            case 3: s.releaseMs = releaseNormToMs(static_cast<float>(fval)); break;
+            case 5:
+                s.oneShot = (ival != 0);
+                if (!s.oneShot && s.releaseMs >= 3800.0f) {
+                    s.releaseMs = 120.0f;
+                    broadcastSlotSummaryToUi(static_cast<int>(sl));
+                }
+                break;
             case 6: s.chokeGroup = static_cast<int>(ival); break;
             case 7: s.reverse = (ival != 0); break;
             case 8: s.purged = (ival != 0); break;
@@ -494,11 +618,10 @@ tresult PLUGIN_API WreckageProcessor::notify(IMessage* message) {
         if (attrs->getBinary("pathUtf8", ptr, sz) == kResultOk && ptr && sz > 0) {
             std::string u8(static_cast<const char*>(ptr), sz);
             int sIdx = static_cast<int>(sl);
-            if (engine_.loadSampleIntoSlot(sIdx, pathFromUtf8(u8), static_cast<int>(prefVl))) {
-                int vlUse = (prefVl >= 0) ? std::clamp(static_cast<int>(prefVl), 0, kMaxVelLayers - 1) : 0;
-                int rrNew = std::max(0, engine_.slot(sIdx).rrCountInLayer(vlUse) - 1);
+            int loadedVl = 0, loadedRR = 0;
+            if (engine_.loadSampleIntoSlot(sIdx, pathFromUtf8(u8), static_cast<int>(prefVl), &loadedVl, &loadedRR)) {
                 broadcastSlotSummaryToUi(sIdx);
-                broadcastWaveDataToUi(sIdx, vlUse, rrNew);
+                broadcastWaveDataToUi(sIdx, loadedVl, loadedRR);
                 broadcastTelemetryToUi();
             }
         }
@@ -510,6 +633,7 @@ tresult PLUGIN_API WreckageProcessor::notify(IMessage* message) {
             std::string u8(static_cast<const char*>(ptr), sz);
             auto p = pathFromUtf8(u8);
             bool ok = engine_.exportKitToNm6(p, p.stem().u8string());
+            if (ok) lastNm6PathUtf8_ = u8;
             if (auto* reply = allocateMessage()) {
                 reply->setMessageID("SaveDone");
                 reply->getAttributes()->setInt("ok", ok ? 1 : 0);
@@ -524,12 +648,12 @@ tresult PLUGIN_API WreckageProcessor::notify(IMessage* message) {
         if (attrs->getBinary("pathUtf8", ptr, sz) == kResultOk && ptr && sz > 0) {
             std::string u8(static_cast<const char*>(ptr), sz);
             if (engine_.loadKitFromNm6(pathFromUtf8(u8))) {
+                lastNm6PathUtf8_ = u8;
                 for (int i = 0; i < kTotalSlots; ++i) {
                     broadcastSlotSummaryToUi(i);
                     for (int vl = 0; vl < kMaxVelLayers; ++vl) {
-                        if (engine_.slot(i).rrCountInLayer(vl) > 0) {
-                            broadcastWaveDataToUi(i, vl, 0);
-                        }
+                        int nr = engine_.slot(i).rrCountInLayer(vl);
+                        for (int r = 0; r < nr; ++r) broadcastWaveDataToUi(i, vl, r);
                     }
                 }
                 broadcastTelemetryToUi();

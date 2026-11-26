@@ -48,9 +48,9 @@ tresult PLUGIN_API WreckageController::initialize(FUnknown* context) {
     addRange(kParamBusHallGain,    STR16("Bus Hall"),     0.75);
     addRange(kParamBusSubGain,     STR16("Bus Sub"),      0.75);
     addRange(kParamBusCloseBypass, STR16("Close Bypass"), 0.0, 1);
-    addRange(kParamBusRoomBypass,  STR16("Room Bypass"),  0.0, 1);
-    addRange(kParamBusHallBypass,  STR16("Hall Bypass"),  0.0, 1);
-    addRange(kParamBusSubBypass,   STR16("Sub Bypass"),   0.0, 1);
+    addRange(kParamBusRoomBypass,  STR16("Room Bypass"),  1.0, 1);
+    addRange(kParamBusHallBypass,  STR16("Hall Bypass"),  1.0, 1);
+    addRange(kParamBusSubBypass,   STR16("Sub Bypass"),   1.0, 1);
 
     addRange(kParamFilterOn,     STR16("Filter On"),     0.0, 1);
     addRange(kParamFilterType,   STR16("Filter Type"),   0.0, 7);
@@ -98,10 +98,10 @@ tresult PLUGIN_API WreckageController::initialize(FUnknown* context) {
     addRange(kParamLimiterOn,     STR16("Output Limiter"),  1.0, 1);
     addRange(kParamMonoBass,      STR16("Mono Bass"),       1.0, 1);
     addRange(kParamVelCurve,       STR16("Velocity Curve"),  0.5, 2);
-    addRange(kParamGlobalFakeMic, STR16("Global Fake Mic"), 1.0, 1);
+    addRange(kParamGlobalFakeMic, STR16("Global Fake Mic"), 0.0, 1);
 
     addRange(kParamPunishOn,     STR16("PUNISH On"),     1.0, 1);
-    addRange(kParamPunishAmount, STR16("PUNISH Amount"), 0.30);
+    addRange(kParamPunishAmount, STR16("PUNISH Amount"), 0.00);
     addRange(kParamPunishMode,   STR16("PUNISH Mode"),   0.5, 2);
 
     addRange(kParamThemeIndex, STR16("UI Theme"), 0.0, 9);
@@ -116,7 +116,7 @@ tresult PLUGIN_API WreckageController::setComponentState(IBStream* state) {
     if (!state) return kResultFalse;
     IBStreamer s(state, kLittleEndian);
     int32 ver = 0;
-    if (!s.readInt32(ver) || ver != 6) return kResultFalse;
+    if (!s.readInt32(ver) || (ver != 6 && ver != 7)) return kResultFalse;
 
     float f = 0.0f; int8 b = 0; int32 iv = 0;
     for (int i = 0; i < 4; ++i) {
@@ -209,6 +209,16 @@ tresult PLUGIN_API WreckageController::notify(IMessage* message) {
         m.stageY = static_cast<float>(sy);
         m.fakeRR = (fr != 0);
         m.fakeVel = (fv != 0);
+        int64 os = 1, cg = 0, rv = 0, pg = 0;
+        double gn = 0.75, pn = 0.50, an = 0.0, rn = 1.0;
+        if (attrs->getInt("oneShot", os) == kResultOk) m.oneShot = (os != 0);
+        if (attrs->getInt("chokeGroup", cg) == kResultOk) m.chokeGroup = static_cast<int>(cg);
+        if (attrs->getInt("reverse", rv) == kResultOk) m.reverse = (rv != 0);
+        if (attrs->getInt("purged", pg) == kResultOk) m.purged = (pg != 0);
+        if (attrs->getFloat("gainNorm", gn) == kResultOk) m.gainNorm = static_cast<float>(gn);
+        if (attrs->getFloat("pitchNorm", pn) == kResultOk) m.pitch = static_cast<float>(pn);
+        if (attrs->getFloat("attackNorm", an) == kResultOk) m.attack = static_cast<float>(an);
+        if (attrs->getFloat("releaseNorm", rn) == kResultOk) m.release = static_cast<float>(rn);
         m.activeVelLayers = std::clamp(static_cast<int>(avl), 1, kMaxVelLayers);
         m.hasCustomColor = (col != 0);
         m.keyColor = static_cast<uint32_t>(col);
@@ -258,8 +268,17 @@ tresult PLUGIN_API WreckageController::notify(IMessage* message) {
         attrs->getFloat("grDb", gr);
         attrs->getFloat("outLvl", ol);
         attrs->getFloat("playhead", ph);
+        int64 lmn = -1, mseq = 0, lvSl = -1, lvVl = -1, lvRr = -1, lvSq = 0, hpLo = 0, hpHi = 0;
         attrs->getInt("actVelLayer", avl);
         attrs->getInt("actRR", arr);
+        attrs->getInt("lastMidiNote", lmn);
+        attrs->getInt("midiNoteSeq", mseq);
+        attrs->getInt("lvSlot", lvSl);
+        attrs->getInt("lvVel", lvVl);
+        attrs->getInt("lvRR", lvRr);
+        attrs->getInt("lvSeq", lvSq);
+        attrs->getInt("hitPulseLo", hpLo);
+        attrs->getInt("hitPulseHi", hpHi);
         attrs->getInt("notesLo", lo); attrs->getInt("notesHi", hi);
         liveVoices_ = static_cast<int>(v);
         liveRamBytes_ = static_cast<uint64_t>(rb);
@@ -269,6 +288,20 @@ tresult PLUGIN_API WreckageController::notify(IMessage* message) {
         livePlayheadNorm_ = static_cast<float>(ph);
         liveActiveVelLayer_ = static_cast<int>(avl);
         liveActiveRR_ = static_cast<int>(arr);
+        liveLastMidiNote_ = static_cast<int>(lmn);
+        liveMidiNoteSeq_ = static_cast<uint32_t>(mseq);
+        liveVoiceSlot_ = static_cast<int>(lvSl);
+        liveVoiceVel_ = static_cast<int>(lvVl);
+        liveVoiceRR_ = static_cast<int>(lvRr);
+        liveVoiceSeq_ = static_cast<uint32_t>(lvSq);
+        uint64_t pLo = static_cast<uint64_t>(hpLo);
+        uint64_t pHi = static_cast<uint64_t>(hpHi);
+        if (pLo != 0 || pHi != 0) {
+            for (int n = 0; n < 64; ++n) {
+                if ((pLo >> n) & 1ULL) notePulseTicks_[static_cast<size_t>(n)] = 4;
+                if ((pHi >> n) & 1ULL) notePulseTicks_[static_cast<size_t>(n + 64)] = 4;
+            }
+        }
         notesLo_ = static_cast<uint64_t>(lo);
         notesHi_ = static_cast<uint64_t>(hi);
         return kResultOk;
@@ -308,6 +341,7 @@ void WreckageController::uiSelectSlot(int slotIdx, int velLayerIdx) {
 }
 
 void WreckageController::uiPanic() {
+    notePulseTicks_.fill(0);
     if (auto* msg = allocateMessage()) { msg->setMessageID("Panic"); sendMessage(msg); msg->release(); }
 }
 

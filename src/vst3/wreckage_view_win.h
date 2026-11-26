@@ -27,6 +27,7 @@ public:
 
 private:
     static LRESULT CALLBACK wndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
+    static LRESULT CALLBACK editSubclassProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
     LRESULT handleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
 
     void createDeviceResources();
@@ -49,6 +50,7 @@ private:
     bool isNotePhysicallyDown(int midiNote) const;
     int hitTestPianoKeyMapNote(float lx, float ly) const;
     void onMouseDown(float lx, float ly);
+    void onMouseRightDown(float lx, float ly);
     void onMouseDoubleClick(float lx, float ly);
     void onMouseMove(float lx, float ly);
     void onMouseUp();
@@ -65,6 +67,7 @@ private:
     WreckageController* controller_ = nullptr;
     HWND hwnd_ = nullptr;
     HWND renameEdit_ = nullptr;
+    WNDPROC origEditProc_ = nullptr;
     int renamingSlot_ = -1;
 
     ID2D1Factory* d2dFactory_ = nullptr;
@@ -84,6 +87,8 @@ private:
     bool browserOpen_ = false;
     bool settingsOpen_ = false;
     int activePressedNote_ = -1;
+    uint32_t lastSeenMidiSeq_ = 0;
+    uint32_t lastSeenVoiceSeq_ = 0;
     int dragTarget_ = 0;
 
     std::vector<std::wstring> browserCategories_;

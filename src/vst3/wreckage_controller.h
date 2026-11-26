@@ -29,11 +29,11 @@ struct UiSlotMirror {
     float gainNorm = 0.75f; // 0.75f = 0.0 dB center
     float pitch = 0.5f;
     float attack = 0.0f;
-    float release = 0.296f;
+    float release = 1.0f;
     float stageX = 0.0f;
     float stageY = 0.0f;
-    bool fakeRR = true;
-    bool fakeVel = true;
+    bool fakeRR = false;
+    bool fakeVel = false;
     bool oneShot = true;
     int chokeGroup = 0;
     bool reverse = false;
@@ -100,6 +100,20 @@ public:
     float livePlayheadNorm() const { return livePlayheadNorm_; }
     int liveActiveVelLayer() const { return liveActiveVelLayer_; }
     int liveActiveRR() const { return liveActiveRR_; }
+    int liveLastMidiNote() const { return liveLastMidiNote_; }
+    uint32_t liveMidiNoteSeq() const { return liveMidiNoteSeq_; }
+    int liveVoiceSlot() const { return liveVoiceSlot_; }
+    int liveVoiceVel() const { return liveVoiceVel_; }
+    int liveVoiceRR() const { return liveVoiceRR_; }
+    uint32_t liveVoiceSeq() const { return liveVoiceSeq_; }
+    bool isNotePulsing(int note) const {
+        return (note >= 0 && note < 128) && (notePulseTicks_[static_cast<size_t>(note)] > 0);
+    }
+    void tickNotePulses() {
+        for (int i = 0; i < 128; ++i) {
+            if (notePulseTicks_[static_cast<size_t>(i)] > 0) --notePulseTicks_[static_cast<size_t>(i)];
+        }
+    }
 
     bool isMidiNoteLive(int note) const {
         if (note < 0 || note >= 128) return false;
@@ -122,6 +136,13 @@ private:
     float livePlayheadNorm_ = -1.0f;
     int liveActiveVelLayer_ = -1;
     int liveActiveRR_ = -1;
+    int liveLastMidiNote_ = -1;
+    uint32_t liveMidiNoteSeq_ = 0;
+    int liveVoiceSlot_ = -1;
+    int liveVoiceVel_ = -1;
+    int liveVoiceRR_ = -1;
+    uint32_t liveVoiceSeq_ = 0;
+    std::array<int, 128> notePulseTicks_{};
     uint64_t notesLo_ = 0;
     uint64_t notesHi_ = 0;
     int saveFlashTicks_ = 0;

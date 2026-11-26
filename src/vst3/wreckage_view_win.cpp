@@ -16,7 +16,7 @@ using namespace Steinberg::Vst;
 
 namespace NoiseMu6ix {
 
-static const wchar_t* kWndClassName = L"NoiseMu6ixWreckageD2DViewClass_v106";
+static const wchar_t* kWndClassName = L"NoiseMu6ixWreckageD2DViewClass_v108";
 
 static HINSTANCE getPluginModuleHandle() {
     HINSTANCE hInst = nullptr;
@@ -159,7 +159,7 @@ tresult PLUGIN_API WreckageWinView::onSize(ViewRect* newSize) {
 bool WreckageWinView::isNotePhysicallyDown(int midiNote) const {
     if (midiNote < 0 || midiNote >= 128) return false;
     if (activePressedNote_ >= 0 && midiNote == activePressedNote_) return true;
-    return controller_ && controller_->isMidiNoteLive(midiNote);
+    return controller_ && (controller_->isMidiNoteLive(midiNote) || controller_->isNotePulsing(midiNote));
 }
 
 void WreckageWinView::createDeviceResources() {
@@ -272,26 +272,38 @@ void WreckageWinView::drawHeader(const ThemePalette& th) {
     brush_->SetColor(toD2D(th.border));
     rt_->DrawLine(D2D1::Point2F(0, 68), D2D1::Point2F(840, 68), brush_, 1.6f);
 
-    drawText(L"NOISE MU6IX", 16, 8, 95, 13, th.textMuted, 9.5f, true);
-    drawText(L"WRECKAGE", 14, 17, 178, 38, th.textPrimary, 30.0f, true);
-    drawText(L"v" WRECKAGE_VERSION_STR, 184, 39, 44, 15, th.accent, 9.5f, true);
+    // N6 Logo Box + Large WRECKAGE + Black Version right next to 'E'
+    brush_->SetColor(toD2D(th.border));
+    rt_->FillRectangle(D2D1::RectF(14, 14, 52, 54), brush_);
+    brush_->SetColor(toD2D(th.accent));
+    rt_->DrawRectangle(D2D1::RectF(14, 14, 52, 54), brush_, 1.5f);
+    drawText(L"N6", 14, 14, 38, 40, th.panelBg, 16.0f, true, DWRITE_TEXT_ALIGNMENT_CENTER);
+
+    drawText(L"WRECKAGE", 58, 12, 174, 44, th.textPrimary, 30.0f, true);
+    drawText(L"v" WRECKAGE_VERSION_STR, 236, 34, 42, 18, th.textPrimary, 9.5f, true);
 
     brush_->SetColor(toD2D(th.panelBg));
-    rt_->FillRectangle(D2D1::RectF(230, 12, 512, 56), brush_);
+    rt_->FillRectangle(D2D1::RectF(282, 12, 530, 56), brush_);
     brush_->SetColor(toD2D(th.border));
-    rt_->DrawRectangle(D2D1::RectF(230, 12, 512, 56), brush_, 1.5f);
+    rt_->DrawRectangle(D2D1::RectF(282, 12, 530, 56), brush_, 1.5f);
     std::wstring rootLabel = controller_->rootLibraryDir().empty()
         ? L"PRESET / KIT  [CLICK TO BROWSE]"
         : (L"LIB: " + std::filesystem::path(controller_->rootLibraryDir()).filename().wstring());
-    drawText(rootLabel.c_str(), 238, 14, 268, 16, th.textMuted, 9.0f, true);
-    drawText(toWide(controller_->activePresetName()).c_str(), 238, 30, 268, 22, th.textPrimary, 12.5f, true, DWRITE_TEXT_ALIGNMENT_CENTER);
+    drawText(rootLabel.c_str(), 288, 14, 236, 16, th.textMuted, 8.8f, true);
+    drawText(toWide(controller_->activePresetName()).c_str(), 288, 30, 236, 22, th.textPrimary, 12.0f, true, DWRITE_TEXT_ALIGNMENT_CENTER);
 
+    // Clean Save Icon Button (flashes green when saved)
     bool savedFlash = controller_->saveFlashTicks() > 0;
-    brush_->SetColor(toD2D(savedFlash ? 0x28CD41 : th.accent));
-    rt_->FillRectangle(D2D1::RectF(518, 12, 582, 56), brush_);
+    brush_->SetColor(toD2D(savedFlash ? 0x28CD41 : th.panelBg));
+    rt_->FillRectangle(D2D1::RectF(536, 12, 582, 56), brush_);
     brush_->SetColor(toD2D(th.border));
-    rt_->DrawRectangle(D2D1::RectF(518, 12, 582, 56), brush_, 1.5f);
-    drawText(savedFlash ? L"SAVED!" : L"SAVE", 518, 12, 64, 44, 0xFFFFFF, 11.0f, true, DWRITE_TEXT_ALIGNMENT_CENTER);
+    rt_->DrawRectangle(D2D1::RectF(536, 12, 582, 56), brush_, 1.5f);
+    uint32_t icoCol = savedFlash ? 0xFFFFFF : th.textPrimary;
+    brush_->SetColor(toD2D(icoCol));
+    // Floppy / Save Icon geometry centered at (559, 34)
+    rt_->DrawRectangle(D2D1::RectF(548, 22, 570, 46), brush_, 1.8f);
+    rt_->FillRectangle(D2D1::RectF(552, 22, 564, 30), brush_);
+    rt_->DrawRectangle(D2D1::RectF(552, 35, 566, 46), brush_, 1.4f);
 
     brush_->SetColor(toD2D(th.panelBg));
     rt_->FillRectangle(D2D1::RectF(588, 12, 746, 56), brush_);
@@ -340,7 +352,7 @@ void WreckageWinView::drawSourceTab(const ThemePalette& th) {
     brush_->SetColor(toD2D(th.border));
     rt_->DrawRectangle(D2D1::RectF(16, 118, 412, 626), brush_, 1.6f);
 
-    drawText(L"PIANO KEY MAP  (+ LOAD WAV | DBL-CLK NAME)", 24, 124, 382, 22, th.textPrimary, 9.8f, true);
+    drawText(L"PIANO KEY MAP  (+ LOAD WAV | R-CLICK RENAME)", 24, 124, 382, 22, th.textPrimary, 9.8f, true);
 
     const wchar_t* banks[3] = { L"BANK 1 (C3-B3)", L"BANK 2 (C4-B4)", L"BANK 3 (C5-B5)" };
     for (int b = 0; b < 3; ++b) {
@@ -423,15 +435,7 @@ void WreckageWinView::drawSourceTab(const ThemePalette& th) {
     brush_->SetColor(toD2D(th.border));
     rt_->DrawRectangle(D2D1::RectF(428, 118, 824, 626), brush_, 1.6f);
 
-    // Sync active playing RR/Vel layer automatically when a new note plays
-    int actVl = controller_->liveActiveVelLayer();
-    int actRr = controller_->liveActiveRR();
-    if (actVl >= 0 && actVl < kMaxVelLayers && actRr >= 0 && actRr < kMaxRoundRobins) {
-        if (controller_->isMidiNoteLive(sl.midiNote) || activePressedNote_ == sl.midiNote) {
-            selectedVelLayer_ = actVl;
-            selectedRR_ = actRr;
-        }
-    }
+    // Active RR & Velocity Layer sync is handled cleanly on trigger events in WM_TIMER
 
     selectedVelLayer_ = std::clamp(selectedVelLayer_, 0, kMaxVelLayers - 1);
     int nRRs = sl.rrCountInLayer(selectedVelLayer_);
@@ -452,7 +456,7 @@ void WreckageWinView::drawSourceTab(const ThemePalette& th) {
         drawText(vLbl, vx, 123, 22, 22, selV ? 0xFFFFFF : th.textPrimary, 8.8f, true, DWRITE_TEXT_ALIGNMENT_CENTER);
     }
 
-    drawText(L"RR:", 572, 123, 22, 22, th.textPrimary, 9.2f, true);
+    drawText(nRRs >= kMaxRoundRobins ? L"9/9" : L"RR:", 570, 123, 24, 22, nRRs >= kMaxRoundRobins ? th.accent : th.textPrimary, 8.8f, true);
     for (int r = 0; r < kMaxRoundRobins; ++r) {
         float rx = 594.0f + r * 19.0f;
         bool exists = (r < nRRs);
@@ -586,7 +590,7 @@ void WreckageWinView::drawSourceTab(const ThemePalette& th) {
     formatDbLabel(vGain, 32, gainNormToDb(sl.gainNorm));
     swprintf(vPitch, 32, L"%+.1f st", (sl.pitch - 0.5f) * 48.0f);
     swprintf(vAtt,   32, L"%.0f ms", sl.attack * 200.0f);
-    swprintf(vRel,   32, L"%.0f ms", 15.0f + sl.release * 3985.0f);
+    swprintf(vRel,   32, L"%.0f ms", releaseNormToMs(sl.release));
 
     drawFader(440, 442, 368, 15, sl.gainNorm, L"GAIN (DBL-CLICK = 0.0 dB)", vGain,  th);
     drawFader(440, 490, 368, 15, sl.pitch,    L"PITCH (DBL-CLICK = 0 st)",  vPitch, th);
@@ -602,8 +606,18 @@ void WreckageWinView::drawStageTab(const ThemePalette& th) {
     rt_->DrawRectangle(D2D1::RectF(16, 116, 824, 626), brush_, 1.6f);
 
     const auto& selSl = controller_->slotMirror(selectedSlot_);
-    std::wstring stageTitle = L"BANK " + std::to_wstring(activeBank_ + 1) + L"  |  " + midiNoteName(selSl.midiNote) + L" : " + toWide(selSl.name);
-    drawText(stageTitle.c_str(), 28, 122, 390, 26, th.textPrimary, 12.5f, true);
+    std::wstring stageTitle = midiNoteName(selSl.midiNote) + L" : " + toWide(selSl.name);
+    drawText(stageTitle.c_str(), 28, 122, 264, 26, th.textPrimary, 12.0f, true);
+    const wchar_t* sBanks[3] = { L"B1", L"B2", L"B3" };
+    for (int b = 0; b < 3; ++b) {
+        float sbx = 300.0f + b * 44.0f;
+        bool bAct = (b == activeBank_);
+        brush_->SetColor(toD2D(bAct ? th.border : th.headerBg));
+        rt_->FillRectangle(D2D1::RectF(sbx, 122, sbx + 40, 148), brush_);
+        brush_->SetColor(toD2D(th.border));
+        rt_->DrawRectangle(D2D1::RectF(sbx, 122, sbx + 40, 148), brush_, 1.2f);
+        drawText(sBanks[b], sbx, 122, 40, 26, bAct ? th.panelBg : th.textPrimary, 9.5f, true, DWRITE_TEXT_ALIGNMENT_CENTER);
+    }
 
     auto drawMiniBtn = [&](float x, float w, const wchar_t* txt, bool on) {
         brush_->SetColor(toD2D(on ? th.accent : th.headerBg));
@@ -1391,6 +1405,19 @@ int WreckageWinView::hitTestPianoKeyMapNote(float lx, float ly) const {
     return activeBank_ * 12 + kWhiteSemis[wIdx];
 }
 
+LRESULT CALLBACK WreckageWinView::editSubclassProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    WreckageWinView* self = reinterpret_cast<WreckageWinView*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+    if (!self) return DefWindowProcW(hwnd, msg, wParam, lParam);
+    WNDPROC orig = self->origEditProc_;
+    if (msg == WM_GETDLGCODE) return DLGC_WANTALLKEYS;
+    if (msg == WM_KEYDOWN) {
+        if (wParam == VK_RETURN) { self->commitInlineRename(); return 0; }
+        if (wParam == VK_ESCAPE) { self->cancelInlineRename(); return 0; }
+    }
+    if (msg == WM_CHAR && (wParam == L'\r' || wParam == 27)) return 0;
+    return orig ? CallWindowProcW(orig, hwnd, msg, wParam, lParam) : DefWindowProcW(hwnd, msg, wParam, lParam);
+}
+
 void WreckageWinView::startInlineRename() {
     if (!hwnd_ || renameEdit_) return;
     renamingSlot_ = selectedSlot_;
@@ -1405,6 +1432,9 @@ void WreckageWinView::startInlineRename() {
         WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL | ES_CENTER,
         px, py, pw, ph, hwnd_, reinterpret_cast<HMENU>(9001), getPluginModuleHandle(), nullptr);
     if (renameEdit_) {
+        SetWindowLongPtrW(renameEdit_, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(this));
+        origEditProc_ = reinterpret_cast<WNDPROC>(
+            SetWindowLongPtrW(renameEdit_, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(&WreckageWinView::editSubclassProc)));
         SendMessageW(renameEdit_, EM_SETLIMITTEXT, 20, 0);
         SendMessageW(renameEdit_, EM_SETSEL, 0, -1);
         SetFocus(renameEdit_);
@@ -1413,18 +1443,36 @@ void WreckageWinView::startInlineRename() {
 
 void WreckageWinView::commitInlineRename() {
     if (!renameEdit_) return;
-    wchar_t buf[64] = {0};
-    GetWindowTextW(renameEdit_, buf, 64);
-    std::string u8 = toUtf8(buf);
-    if (!u8.empty() && renamingSlot_ >= 0) controller_->uiRenameSlot(renamingSlot_, u8);
-    DestroyWindow(renameEdit_);
+    HWND ed = renameEdit_;
     renameEdit_ = nullptr;
+    WNDPROC orig = origEditProc_;
+    origEditProc_ = nullptr;
+    if (orig) SetWindowLongPtrW(ed, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(orig));
+    SetWindowLongPtrW(ed, GWLP_USERDATA, 0);
+
+    wchar_t buf[64] = {0};
+    GetWindowTextW(ed, buf, 64);
+    std::string u8 = toUtf8(buf);
+    int sl = renamingSlot_;
     renamingSlot_ = -1;
+    if (!u8.empty() && sl >= 0) controller_->uiRenameSlot(sl, u8);
+    DestroyWindow(ed);
+    if (hwnd_) SetFocus(hwnd_);
     InvalidateRect(hwnd_, nullptr, FALSE);
 }
 
 void WreckageWinView::cancelInlineRename() {
-    if (renameEdit_) { DestroyWindow(renameEdit_); renameEdit_ = nullptr; renamingSlot_ = -1; }
+    if (!renameEdit_) return;
+    HWND ed = renameEdit_;
+    renameEdit_ = nullptr;
+    WNDPROC orig = origEditProc_;
+    origEditProc_ = nullptr;
+    if (orig) SetWindowLongPtrW(ed, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(orig));
+    SetWindowLongPtrW(ed, GWLP_USERDATA, 0);
+    renamingSlot_ = -1;
+    DestroyWindow(ed);
+    if (hwnd_) SetFocus(hwnd_);
+    InvalidateRect(hwnd_, nullptr, FALSE);
 }
 
 void WreckageWinView::applyZoomIndex(int idx) {
@@ -1551,17 +1599,18 @@ void WreckageWinView::rescanRootDirectory() {
 void WreckageWinView::onMouseDoubleClick(float lx, float ly) {
     if (browserOpen_ || settingsOpen_) return;
 
+    if (ly >= 636 && ly < 724 && lx >= 138 && lx <= 488) {
+        controller_->uiSetParam(kParamPunishAmount, 0.0);
+        InvalidateRect(hwnd_, nullptr, FALSE);
+        return;
+    }
+
     if (activeTab_ == 0) {
-        int hitKey = hitTestPianoKeyMapNote(lx, ly);
-        if (hitKey >= 0) {
-            selectedSlot_ = hitKey;
-            startInlineRename();
-            return;
-        }
         if (lx >= 440 && lx <= 808) {
-            // Double-click GAIN -> 0.0 dB (norm = 0.75), PITCH -> 0.0 st (norm = 0.50)
-            if (ly >= 426 && ly <= 466) controller_->uiSetSlotProp(selectedSlot_, 0, 0, 0.75);
-            else if (ly >= 474 && ly <= 514) controller_->uiSetSlotProp(selectedSlot_, 1, 0, 0.50);
+            if (ly >= 424 && ly <= 468) controller_->uiSetSlotProp(selectedSlot_, 0, 0, 0.75);      // 0.0 dB
+            else if (ly >= 472 && ly <= 516) controller_->uiSetSlotProp(selectedSlot_, 1, 0, 0.50); // 0.0 st
+            else if (ly >= 520 && ly <= 564) controller_->uiSetSlotProp(selectedSlot_, 2, 0, 0.00); // 0 ms
+            else if (ly >= 566 && ly <= 622) controller_->uiSetSlotProp(selectedSlot_, 3, 0, 1.00); // Full
         }
     } else if (activeTab_ == 1) {
         if (lx >= 32 && lx <= 808 && ly >= 156 && ly <= 366) {
@@ -1588,6 +1637,18 @@ void WreckageWinView::onMouseDoubleClick(float lx, float ly) {
         }
     }
     InvalidateRect(hwnd_, nullptr, FALSE);
+}
+
+void WreckageWinView::onMouseRightDown(float lx, float ly) {
+    if (browserOpen_ || settingsOpen_) return;
+    if (activeTab_ == 0) {
+        int hitKey = hitTestPianoKeyMapNote(lx, ly);
+        if (hitKey >= 0) {
+            selectedSlot_ = hitKey;
+            startInlineRename();
+            InvalidateRect(hwnd_, nullptr, FALSE);
+        }
+    }
 }
 
 void WreckageWinView::onMouseDown(float lx, float ly) {
@@ -1643,8 +1704,8 @@ void WreckageWinView::onMouseDown(float lx, float ly) {
     }
 
     if (ly < 68) {
-        if (lx >= 230 && lx <= 512) { rescanRootDirectory(); browserOpen_ = true; InvalidateRect(hwnd_, nullptr, FALSE); return; }
-        if (lx >= 518 && lx <= 582) { openExportNm6Dialog(false); return; }
+        if (lx >= 282 && lx <= 530) { rescanRootDirectory(); browserOpen_ = true; InvalidateRect(hwnd_, nullptr, FALSE); return; }
+        if (lx >= 536 && lx <= 582) { openExportNm6Dialog(false); return; }
         if (lx >= 752 && lx <= 784) { controller_->uiPanic(); activePressedNote_ = -1; InvalidateRect(hwnd_, nullptr, FALSE); return; }
         if (lx >= 790 && lx <= 826) { settingsOpen_ = !settingsOpen_; InvalidateRect(hwnd_, nullptr, FALSE); return; }
         return;
@@ -1719,8 +1780,11 @@ void WreckageWinView::onMouseDown(float lx, float ly) {
         } else if (int hitKey = hitTestPianoKeyMapNote(lx, ly); hitKey >= 0) {
             selectedSlot_ = hitKey;
             selectedRR_ = 0;
+            int note = controller_->slotMirror(selectedSlot_).midiNote;
+            SetCapture(hwnd_);
+            activePressedNote_ = note;
             controller_->uiSelectSlot(selectedSlot_, selectedVelLayer_);
-            controller_->uiTriggerNote(controller_->slotMirror(selectedSlot_).midiNote, 0.88f, true);
+            controller_->uiTriggerNote(note, 0.88f, true);
         } else if (ly >= 568 && ly <= 610) {
             if (lx >= 26 && lx <= 116) { openLoadWavDialog(); return; }
             else if (lx >= 122 && lx <= 212) { openExportNm6Dialog(true); return; }
@@ -1780,15 +1844,24 @@ void WreckageWinView::onMouseDown(float lx, float ly) {
             if (d == 0) controller_->uiSetSlotProp(selectedSlot_, 5, sl.oneShot ? 0 : 1, 0.0);
             else if (d == 1) controller_->uiSetSlotProp(selectedSlot_, 6, (sl.chokeGroup + 1) % 5, 0.0);
             else controller_->uiSetSlotProp(selectedSlot_, 7, sl.reverse ? 0 : 1, 0.0);
-        } else if (lx >= 440 && lx <= 808 && ly >= 426 && ly <= 612) {
+        } else if (lx >= 436 && lx <= 814 && ly >= 424 && ly <= 622) {
             SetCapture(hwnd_);
-            int fIdx = std::clamp(static_cast<int>((ly - 426.0f) / 48.0f), 0, 3);
+            int fIdx = 0;
+            if (ly < 470.0f) fIdx = 0;
+            else if (ly < 518.0f) fIdx = 1;
+            else if (ly < 566.0f) fIdx = 2;
+            else fIdx = 3;
             dragTarget_ = 20 + fIdx;
             controller_->uiSetSlotProp(selectedSlot_, fIdx, 0, std::clamp((lx - 440.0f) / 368.0f, 0.0f, 1.0f));
         }
     } else if (activeTab_ == 1) {
         if (ly >= 122 && ly <= 148) {
-            if (lx >= 440 && lx <= 566) stageGridSnap_ = !stageGridSnap_;
+            if (lx >= 300 && lx <= 428) {
+                activeBank_ = std::clamp(static_cast<int>((lx - 300.0f) / 44.0f), 0, 2);
+                selectedSlot_ = activeBank_ * 12 + (selectedSlot_ % 12);
+                selectedRR_ = 0;
+                controller_->uiSelectSlot(selectedSlot_, selectedVelLayer_);
+            } else if (lx >= 440 && lx <= 566) stageGridSnap_ = !stageGridSnap_;
             else if (lx >= 574 && lx <= 706) followMidi_ = !followMidi_;
             else if (lx >= 714 && lx <= 810) controller_->uiResetStage();
         } else if (lx >= 32 && lx <= 808 && ly >= 156 && ly <= 366) {
@@ -1818,8 +1891,10 @@ void WreckageWinView::onMouseDown(float lx, float ly) {
             }
             if (hitSlot >= 0) {
                 selectedSlot_ = hitSlot;
+                int note = controller_->slotMirror(selectedSlot_).midiNote;
+                activePressedNote_ = note;
                 controller_->uiSelectSlot(selectedSlot_, selectedVelLayer_);
-                controller_->uiTriggerNote(controller_->slotMirror(selectedSlot_).midiNote, 0.85f, true);
+                controller_->uiTriggerNote(note, 0.85f, true);
                 SetCapture(hwnd_); dragTarget_ = 1;
                 float nx, ny; screenToStage(lx, ly, nx, ny);
                 controller_->uiSetStageXY(selectedSlot_, nx, ny);
@@ -1891,9 +1966,21 @@ void WreckageWinView::onMouseDown(float lx, float ly) {
             }
         } else if (activeFxModule_ == 1) {
             if (ly >= 244 && ly <= 366 && lx >= 44 && lx <= 792) {
+                float lf = static_cast<float>(controller_->getParamNormalized(kParamEqLowFreq));
+                float lg = static_cast<float>(controller_->getParamNormalized(kParamEqLowGain));
+                float mf = static_cast<float>(controller_->getParamNormalized(kParamEqMidFreq));
+                float mg = static_cast<float>(controller_->getParamNormalized(kParamEqMidGain));
+                float hf = static_cast<float>(controller_->getParamNormalized(kParamEqHighFreq));
+                float hg = static_cast<float>(controller_->getParamNormalized(kParamEqHighGain));
+                float nx[3] = { 44.0f + (0.06f + lf * 0.24f) * 748.0f, 44.0f + (0.34f + mf * 0.32f) * 748.0f, 44.0f + (0.70f + hf * 0.24f) * 748.0f };
+                float ny[3] = { 244.0f + (1.0f - lg) * 122.0f, 244.0f + (1.0f - mg) * 122.0f, 244.0f + (1.0f - hg) * 122.0f };
+                int bestB = 0; float bestD2 = 1e18f;
+                for (int b = 0; b < 3; ++b) {
+                    float d2 = (lx - nx[b]) * (lx - nx[b]) + (ly - ny[b]) * (ly - ny[b]);
+                    if (d2 < bestD2) { bestD2 = d2; bestB = b; }
+                }
                 SetCapture(hwnd_);
-                int band = (lx < 293.0f) ? 0 : ((lx < 542.0f) ? 1 : 2);
-                dragTarget_ = 80 + band;
+                dragTarget_ = 80 + bestB;
                 onMouseMove(lx, ly);
             } else if (ly >= 388 && ly <= 424) {
                 SetCapture(hwnd_);
@@ -1997,7 +2084,14 @@ void WreckageWinView::onMouseMove(float lx, float ly) {
     } else if (dragTarget_ >= 80 && dragTarget_ <= 82) {
         int b = dragTarget_ - 80;
         float gNorm = 1.0f - std::clamp((ly - 244.0f) / 122.0f, 0.0f, 1.0f);
+        float xNorm = std::clamp((lx - 44.0f) / 748.0f, 0.0f, 1.0f);
+        float fNorm = 0.5f;
+        if (b == 0) fNorm = std::clamp((xNorm - 0.06f) / 0.24f, 0.0f, 1.0f);
+        else if (b == 1) fNorm = std::clamp((xNorm - 0.34f) / 0.32f, 0.0f, 1.0f);
+        else fNorm = std::clamp((xNorm - 0.70f) / 0.24f, 0.0f, 1.0f);
+        static const ParamID fIds[3] = { kParamEqLowFreq, kParamEqMidFreq, kParamEqHighFreq };
         static const ParamID gIds[3] = { kParamEqLowGain, kParamEqMidGain, kParamEqHighGain };
+        controller_->uiSetParam(fIds[b], fNorm);
         controller_->uiSetParam(gIds[b], gNorm);
     } else if (dragTarget_ >= 83 && dragTarget_ <= 88) {
         int idx = dragTarget_ - 83;
@@ -2070,8 +2164,50 @@ LRESULT WreckageWinView::handleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARA
             return 0;
         }
         case WM_TIMER:
-            if (controller_) controller_->decSaveFlash();
+            if (controller_) {
+                controller_->decSaveFlash();
+                controller_->tickNotePulses();
+
+                uint32_t vSeq = controller_->liveVoiceSeq();
+                if (vSeq != lastSeenVoiceSeq_) {
+                    lastSeenVoiceSeq_ = vSeq;
+                    int lvSlot = controller_->liveVoiceSlot();
+                    int lvVel  = controller_->liveVoiceVel();
+                    int lvRR   = controller_->liveVoiceRR();
+                    if (followMidi_ && lvSlot >= 0 && lvSlot < kTotalSlots) {
+                        if (selectedSlot_ != lvSlot) {
+                            selectedSlot_ = lvSlot;
+                            activeBank_ = lvSlot / 12;
+                            controller_->uiSelectSlot(selectedSlot_, std::max(0, lvVel));
+                        }
+                        if (lvVel >= 0 && lvVel < kMaxVelLayers) selectedVelLayer_ = lvVel;
+                        if (lvRR >= 0 && lvRR < kMaxRoundRobins) selectedRR_ = lvRR;
+                    } else if (lvSlot == selectedSlot_) {
+                        if (lvVel >= 0 && lvVel < kMaxVelLayers) selectedVelLayer_ = lvVel;
+                        if (lvRR >= 0 && lvRR < kMaxRoundRobins) selectedRR_ = lvRR;
+                    }
+                } else if (followMidi_) {
+                    uint32_t mSeq = controller_->liveMidiNoteSeq();
+                    if (mSeq != lastSeenMidiSeq_) {
+                        lastSeenMidiSeq_ = mSeq;
+                        int mNote = controller_->liveLastMidiNote();
+                        for (int s = 0; s < kTotalSlots; ++s) {
+                            if (controller_->slotMirror(s).midiNote == mNote) {
+                                if (selectedSlot_ != s) {
+                                    selectedSlot_ = s;
+                                    activeBank_ = s / 12;
+                                    controller_->uiSelectSlot(selectedSlot_, selectedVelLayer_);
+                                }
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
             InvalidateRect(hwnd, nullptr, FALSE);
+            return 0;
+        case WM_RBUTTONDOWN:
+            onMouseRightDown(GET_X_LPARAM(lParam) / uiScale_, GET_Y_LPARAM(lParam) / uiScale_);
             return 0;
         case WM_LBUTTONDBLCLK:
             onMouseDoubleClick(GET_X_LPARAM(lParam) / uiScale_, GET_Y_LPARAM(lParam) / uiScale_);

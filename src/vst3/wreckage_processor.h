@@ -37,6 +37,11 @@ private:
     float cpuLoadPct_ = 0.0f;
     int selectedUiSlot_ = 0;
     int telemetryCounter_ = 0;
+    int lastMidiNote_ = -1;
+    uint32_t midiNoteSeq_ = 0;
+    uint64_t midiHitPulseLo_ = 0;
+    uint64_t midiHitPulseHi_ = 0;
+    std::string lastNm6PathUtf8_;
 };
 
 } // namespace NoiseMu6ix
