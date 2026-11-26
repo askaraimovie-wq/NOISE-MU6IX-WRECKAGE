@@ -1,5 +1,6 @@
 #pragma once
 #include <cstdint>
+#include <cmath>
 
 namespace NoiseMu6ix {
 
@@ -150,6 +151,26 @@ inline float gainDbToLinear(float db) {
         for (int i = 0; i < -xi && i < 24; ++i) scale *= 0.5f;
     }
     return scale * poly;
+}
+
+// Logarithmic Release mapping: 0.0 -> 10 ms, 0.5 -> 200 ms, 1.0 -> 4000 ms
+inline float releaseNormToMs(float norm01) {
+    float n = (norm01 < 0.0f) ? 0.0f : ((norm01 > 1.0f) ? 1.0f : norm01);
+    // 10 * 400^n = 10 * 2^(n * 8.64385619)
+    float x = n * 8.64385619f;
+    int xi = static_cast<int>(x);
+    float xf = x - static_cast<float>(xi);
+    float poly = 1.0f + xf * (0.69314718f + xf * (0.24022651f + xf * 0.05550411f));
+    float scale = 1.0f;
+    for (int i = 0; i < xi && i < 16; ++i) scale *= 2.0f;
+    return 10.0f * scale * poly;
+}
+
+inline float releaseMsToNorm(float ms) {
+    if (ms <= 10.0f) return 0.0f;
+    if (ms >= 4000.0f) return 1.0f;
+    float n = std::log2(ms / 10.0f) / 8.64385619f;
+    return (n < 0.0f) ? 0.0f : ((n > 1.0f) ? 1.0f : n);
 }
 
 } // namespace NoiseMu6ix

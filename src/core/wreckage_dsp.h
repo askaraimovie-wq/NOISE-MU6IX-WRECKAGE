@@ -341,7 +341,7 @@ struct MasterFxParams {
     bool  monoBass = true;
 
     bool  punishOn = true;
-    float punishAmount = 0.30f;
+    float punishAmount = 0.0f;
     PunishMode punishMode = PunishMode::HurtMePlenty;
 };
 
@@ -356,6 +356,9 @@ public:
         limRel_ = fastExp(-1.0f / (sr_ * 0.045f));
         lastFiltHash_ = -1.0f;
         lastEqHash_ = -1.0f;
+        lastRevHash_ = -1.0f;
+        lastCompAttMs_ = -1.0f;
+        lastCompRelMs_ = -1.0f;
     }
 
     float currentGrDb() const { return lastGrDb_; }
@@ -412,11 +415,17 @@ public:
         }
 
         if (p.compOn) {
-            float att = fastExp(-1.0f / (sr_ * std::max(0.5f, p.compAttackMs) * 0.001f));
-            float rel = fastExp(-1.0f / (sr_ * std::max(10.0f, p.compReleaseMs) * 0.001f));
+            if (std::fabs(p.compAttackMs - lastCompAttMs_) > 0.01f) {
+                lastCompAttMs_ = p.compAttackMs;
+                compAttCoeff_ = fastExp(-1.0f / (sr_ * std::max(0.5f, p.compAttackMs) * 0.001f));
+            }
+            if (std::fabs(p.compReleaseMs - lastCompRelMs_) > 0.05f) {
+                lastCompRelMs_ = p.compReleaseMs;
+                compRelCoeff_ = fastExp(-1.0f / (sr_ * std::max(10.0f, p.compReleaseMs) * 0.001f));
+            }
             float det = std::max(std::fabs(l), std::fabs(r));
-            compEnv_ = (det > compEnv_) ? (att * compEnv_ + (1.0f - att) * det)
-                                        : (rel * compEnv_ + (1.0f - rel) * det);
+            compEnv_ = (det > compEnv_) ? (compAttCoeff_ * compEnv_ + (1.0f - compAttCoeff_) * det)
+                                        : (compRelCoeff_ * compEnv_ + (1.0f - compRelCoeff_) * det);
             float envDb = 20.0f * std::log10(std::max(1e-6f, compEnv_));
             float overDb = envDb - p.compThreshDb;
             float grDb = 0.0f;
@@ -456,8 +465,13 @@ public:
         }
 
         if (p.revOn && p.revMix > 0.005f) {
-            float modeScale = (p.revMode == 0) ? 0.60f : ((p.revMode == 1) ? 0.95f : 1.35f);
-            masterRevBus_.configure(p.revPreDelayMs, p.revDecaySec * modeScale, p.revSize, p.revLowCutHz, p.revHighCutHz);
+            float revHash = p.revPreDelayMs + p.revDecaySec * 37.0f + p.revSize * 113.0f
+                          + p.revLowCutHz * 0.17f + p.revHighCutHz * 0.013f + p.revMode * 10000.0f;
+            if (std::fabs(revHash - lastRevHash_) > 0.01f) {
+                lastRevHash_ = revHash;
+                float modeScale = (p.revMode == 0) ? 0.60f : ((p.revMode == 1) ? 0.95f : 1.35f);
+                masterRevBus_.configure(p.revPreDelayMs, p.revDecaySec * modeScale, p.revSize, p.revLowCutHz, p.revHighCutHz);
+            }
             float rL = 0.0f, rR = 0.0f;
             masterRevBus_.process(l, r, rL, rR);
             l = l * (1.0f - p.revMix * 0.25f) + rL * p.revMix * 1.45f;
@@ -502,7 +516,9 @@ public:
 
 private:
     float sr_ = 44100.0f;
-    float lastFiltHash_ = -1.0f, lastEqHash_ = -1.0f, lastWarmth_ = -99.0f;
+    float lastFiltHash_ = -1.0f, lastEqHash_ = -1.0f, lastWarmth_ = -99.0f, lastRevHash_ = -1.0f;
+    float lastCompAttMs_ = -1.0f, lastCompRelMs_ = -1.0f;
+    float compAttCoeff_ = 0.99f, compRelCoeff_ = 0.999f;
     float lastGrDb_ = 0.0f;
     float outEnv_ = 0.0f;
     Biquad flt1L_, flt1R_, flt2L_, flt2R_;

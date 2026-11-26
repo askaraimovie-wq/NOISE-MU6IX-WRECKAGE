@@ -60,11 +60,11 @@ struct SlotConfig {
     float toneLowDb = 0.0f;
     float toneHighDb = 0.0f;
     float attackMs = 0.0f;
-    float releaseMs = 1200.0f;
+    float releaseMs = 4000.0f;
 
     // Per-Key Fake RR & Fake Velocity (Fake Mic stays Global)
-    bool fakeRR  = true;
-    bool fakeVel = true;
+    bool fakeRR  = false;
+    bool fakeVel = false;
 
     bool oneShot = true;
     int chokeGroup = 0;
@@ -130,6 +130,7 @@ struct Voice {
     float attackInc = 1.0f;
     float releaseDec = 0.001f;
     double releaseStartFrame = 0.0;
+    double elapsedHostSamples = 0.0;
     float chokeFade = 1.0f;
     float chokeDec = 0.004f;
 
@@ -154,9 +155,9 @@ struct Voice {
 
 struct EngineParams {
     float busGain[4]   = { 1.0f, 1.0f, 1.0f, 1.0f }; // 1.0f = 0.0 dB default
-    bool  busBypass[4] = { false, false, false, false };
+    bool  busBypass[4] = { false, true, true, true };
 
-    bool  globalFakeMic = true;
+    bool  globalFakeMic = false;
 
     MasterFxParams fx;
     VelocityCurve velCurve = VelocityCurve::Linear;
@@ -203,9 +204,9 @@ public:
             slots_[i].toneLowDb = 0.0f;
             slots_[i].toneHighDb = 0.0f;
             slots_[i].attackMs = 0.0f;
-            slots_[i].releaseMs = 1200.0f;
-            slots_[i].fakeRR = true;
-            slots_[i].fakeVel = true;
+            slots_[i].releaseMs = 4000.0f;
+            slots_[i].fakeRR = false;
+            slots_[i].fakeVel = false;
             slots_[i].purged = false;
         }
         activeVoices_.store(0, std::memory_order_relaxed);
@@ -272,6 +273,13 @@ public:
     float currentGrDb() const { return masterFx_.currentGrDb(); }
     float currentOutLevel() const { return masterFx_.currentOutLevel(); }
 
+    void getLastTriggeredVoice(int& outSlot, int& outVelLayer, int& outRR, uint32_t& outSeq) const {
+        outSlot = lastVoiceSlot_.load(std::memory_order_relaxed);
+        outVelLayer = lastVoiceVel_.load(std::memory_order_relaxed);
+        outRR = lastVoiceRR_.load(std::memory_order_relaxed);
+        outSeq = voiceSeq_.load(std::memory_order_relaxed);
+    }
+
     void getSlotLivePlayback(int slotIdx, float& outPlayheadNorm, int& outActiveVelLayer, int& outActiveRR) {
         std::unique_lock<std::mutex> lock(stateMutex_, std::try_to_lock);
         outPlayheadNorm = -1.0f;
@@ -321,7 +329,7 @@ public:
     }
 
     // Loads sample respecting Max 4 Velocity Layers and Max 9 Round-Robins per layer
-    bool loadSampleIntoSlot(int slotIdx, const std::filesystem::path& filePath, int preferredVelLayer = -1) {
+    bool loadSampleIntoSlot(int slotIdx, const std::filesystem::path& filePath, int preferredVelLayer = -1, int* outVelLayer = nullptr, int* outRR = nullptr) {
         auto buf = std::make_shared<AudioBuffer>();
         if (!WavLoader::loadFromFile(filePath, *buf)) return false;
 
@@ -370,6 +378,8 @@ public:
             s.stageY = 0.0f;
         }
         s.purged = false;
+        if (outVelLayer) *outVelLayer = vl;
+        if (outRR) *outRR = targetIdx;
         return true;
     }
 
@@ -564,7 +574,7 @@ public:
 
                 if (!v.releasing) {
                     v.envVal = std::min(1.0f, v.envVal + v.attackInc);
-                    if (v.oneShot && relPos >= v.releaseStartFrame) {
+                    if (v.oneShot && v.elapsedHostSamples >= v.releaseStartFrame) {
                         v.releasing = true;
                     }
                 }
@@ -651,6 +661,7 @@ public:
                 }
 
                 v.playPos += v.pitchRatio;
+                v.elapsedHostSamples += 1.0;
             }
 
             float busL[4] = { 0, 0, 0, 0 };
@@ -798,7 +809,12 @@ private:
         v.slotGain = s.gain;
         v.stageDepth = s.stageY;
         v.chokeFade = 1.0f;
+        v.elapsedHostSamples = 0.0;
         v.age = ++voiceCounter_;
+        lastVoiceSlot_.store(slotIdx, std::memory_order_relaxed);
+        lastVoiceVel_.store(vlIdx, std::memory_order_relaxed);
+        lastVoiceRR_.store(chosenRR, std::memory_order_relaxed);
+        voiceSeq_.fetch_add(1, std::memory_order_relaxed);
 
         double totalF = static_cast<double>(prim->numFrames());
         if (s.reverse) {
@@ -860,7 +876,7 @@ private:
         v.releaseDec = static_cast<float>(1.0 / relSamples);
         v.releaseStartFrame = std::max(attSamples * 0.5, relSamples * 0.25);
         if (s.releaseMs >= 3800.0f) {
-            v.releaseStartFrame = regLen + 1000.0;
+            v.releaseStartFrame = 1e12;
         }
         v.envVal = (attSamples <= 1.0) ? 1.0f : 0.0f;
 
@@ -888,6 +904,10 @@ private:
     std::array<Voice, kMaxVoices> voices_;
     std::array<std::atomic<int>, 128> notePlaying_{};
     std::atomic<int> activeVoices_{0};
+    std::atomic<int> lastVoiceSlot_{-1};
+    std::atomic<int> lastVoiceVel_{-1};
+    std::atomic<int> lastVoiceRR_{-1};
+    std::atomic<uint32_t> voiceSeq_{0};
     uint64_t voiceCounter_ = 0;
     uint32_t rngState_ = 0x9E3779B9u;
     std::mutex stateMutex_;
