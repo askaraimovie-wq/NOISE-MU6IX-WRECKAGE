@@ -73,6 +73,7 @@ public:
     void uiTriggerNote(int midiNote, float vel, bool isOn);
     void uiSelectSlot(int slotIdx, int velLayerIdx);
     void uiPanic();
+    void uiRequestFullSync();
     void uiResetKit();
     void uiClearSlot(int slotIdx);
     void uiDeleteWaveItem(int slotIdx, int velLayerIdx, int rrIdx);

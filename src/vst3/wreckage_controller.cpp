@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <filesystem>
 #ifdef _WIN32
 #include <windows.h>
 #endif
@@ -12,6 +13,18 @@ using namespace Steinberg;
 using namespace Steinberg::Vst;
 
 namespace NoiseMu6ix {
+
+static std::wstring utf8ToWide(const std::string& s) {
+#ifdef _WIN32
+    if (s.empty()) return L"";
+    int n = MultiByteToWideChar(CP_UTF8, 0, s.c_str(), -1, nullptr, 0);
+    std::wstring out(static_cast<size_t>(std::max(0, n - 1)), L'\0');
+    if (n > 1) MultiByteToWideChar(CP_UTF8, 0, s.c_str(), -1, &out[0], n);
+    return out;
+#else
+    return std::wstring(s.begin(), s.end());
+#endif
+}
 
 static std::string wideToUtf8(const std::wstring& w) {
 #ifdef _WIN32
@@ -77,9 +90,10 @@ tresult PLUGIN_API WreckageController::initialize(FUnknown* context) {
     addRange(kParamSatDrive,  STR16("Sat Drive"),  0.25);
     addRange(kParamSatWarmth, STR16("Sat Warmth"), 0.50);
     addRange(kParamSatMix,    STR16("Sat Mix"),    0.00);
+    addRange(kParamSatMode,   STR16("Sat Mode"),   0.00, 3);
 
     addRange(kParamDelayOn,       STR16("Delay On"),       0.0, 1);
-    addRange(kParamDelayMode,     STR16("Delay Mode"),     0.0, 1);
+    addRange(kParamDelayMode,     STR16("Delay Mode"),     0.0, 2);
     addRange(kParamDelayTime,     STR16("Delay Time"),     0.28);
     addRange(kParamDelayFeedback, STR16("Delay Feedback"), 0.36);
     addRange(kParamDelayTone,     STR16("Delay Tone"),     0.65);
@@ -100,7 +114,7 @@ tresult PLUGIN_API WreckageController::initialize(FUnknown* context) {
     addRange(kParamVelCurve,       STR16("Velocity Curve"),  0.5, 2);
     addRange(kParamGlobalFakeMic, STR16("Global Fake Mic"), 0.0, 1);
 
-    addRange(kParamPunishOn,     STR16("PUNISH On"),     1.0, 1);
+    addRange(kParamPunishOn,     STR16("PUNISH On"),     0.0, 1);
     addRange(kParamPunishAmount, STR16("PUNISH Amount"), 0.00);
     addRange(kParamPunishMode,   STR16("PUNISH Mode"),   0.5, 2);
 
@@ -116,7 +130,7 @@ tresult PLUGIN_API WreckageController::setComponentState(IBStream* state) {
     if (!state) return kResultFalse;
     IBStreamer s(state, kLittleEndian);
     int32 ver = 0;
-    if (!s.readInt32(ver) || (ver != 6 && ver != 7)) return kResultFalse;
+    if (!s.readInt32(ver) || (ver < 6 || ver > 8)) return kResultFalse;
 
     float f = 0.0f; int8 b = 0; int32 iv = 0;
     for (int i = 0; i < 4; ++i) {
@@ -149,12 +163,13 @@ tresult PLUGIN_API WreckageController::setComponentState(IBStream* state) {
     s.readFloat(f); setParamNormalized(kParamCompMakeup, f / 24.0f + 0.5f);
 
     s.readInt8(b); setParamNormalized(kParamSatOn, b ? 1.0 : 0.0);
+    if (ver >= 8) { s.readInt32(iv); setParamNormalized(kParamSatMode, std::clamp(iv, 0, 3) / 3.0); }
     s.readFloat(f); setParamNormalized(kParamSatDrive, f);
     s.readFloat(f); setParamNormalized(kParamSatWarmth, f);
     s.readFloat(f); setParamNormalized(kParamSatMix, f);
 
     s.readInt8(b); setParamNormalized(kParamDelayOn, b ? 1.0 : 0.0);
-    s.readInt32(iv); setParamNormalized(kParamDelayMode, iv ? 1.0 : 0.0);
+    s.readInt32(iv); setParamNormalized(kParamDelayMode, std::clamp(iv, 0, 2) * 0.5);
     s.readFloat(f); setParamNormalized(kParamDelayTime, (f - 20.0f) / 780.0f);
     s.readFloat(f); setParamNormalized(kParamDelayFeedback, f / 0.88f);
     s.readFloat(f); setParamNormalized(kParamDelayTone, f);
@@ -178,6 +193,16 @@ tresult PLUGIN_API WreckageController::setComponentState(IBStream* state) {
     s.readInt32(iv); setParamNormalized(kParamPunishMode, iv * 0.5);
     s.readInt32(iv); setParamNormalized(kParamThemeIndex, iv / 9.0);
     s.readInt32(iv); setParamNormalized(kParamUiZoom, iv * 0.5);
+    if (ver >= 7) {
+        int32 pathLen = 0;
+        if (s.readInt32(pathLen) && pathLen > 0 && pathLen < 4096) {
+            std::string pU8(static_cast<size_t>(pathLen), '\0');
+            s.readRaw(&pU8[0], pathLen);
+            lastSavedNm6Path_ = utf8ToWide(pU8);
+            std::filesystem::path fp(lastSavedNm6Path_);
+            activePresetName_ = wideToUtf8(fp.stem().wstring());
+        }
+    }
     return kResultOk;
 }
 
@@ -306,6 +331,17 @@ tresult PLUGIN_API WreckageController::notify(IMessage* message) {
         notesHi_ = static_cast<uint64_t>(hi);
         return kResultOk;
     }
+    if (strcmp(mid, "PresetPathUpdated") == 0) {
+        const void* ptr = nullptr; uint32 sz = 0;
+        if (attrs->getBinary("pathUtf8", ptr, sz) == kResultOk && ptr && sz > 0) {
+            std::string u8(static_cast<const char*>(ptr), sz);
+            lastSavedNm6Path_ = utf8ToWide(u8);
+            std::filesystem::path fp(lastSavedNm6Path_);
+            std::string stem = wideToUtf8(fp.stem().wstring());
+            if (!stem.empty()) activePresetName_ = stem;
+        }
+        return kResultOk;
+    }
     if (strcmp(mid, "SaveDone") == 0) {
         int64 ok = 0; attrs->getInt("ok", ok);
         if (ok) saveFlashTicks_ = 30;
@@ -338,6 +374,10 @@ void WreckageController::uiSelectSlot(int slotIdx, int velLayerIdx) {
         msg->getAttributes()->setInt("velLayer", velLayerIdx);
         sendMessage(msg); msg->release();
     }
+}
+
+void WreckageController::uiRequestFullSync() {
+    if (auto* msg = allocateMessage()) { msg->setMessageID("RequestFullSync"); sendMessage(msg); msg->release(); }
 }
 
 void WreckageController::uiPanic() {

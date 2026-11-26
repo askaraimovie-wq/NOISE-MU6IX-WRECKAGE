@@ -31,12 +31,13 @@ private:
     void broadcastSlotSummaryToUi(int slotIdx);
     void broadcastWaveDataToUi(int slotIdx, int velLayerIdx, int rrIdx);
     void broadcastTelemetryToUi();
+    void broadcastPresetPathToUi();
 
     WreckageEngine engine_;
     double sampleRate_ = 44100.0;
     float cpuLoadPct_ = 0.0f;
     int selectedUiSlot_ = 0;
-    int telemetryCounter_ = 0;
+    int telemetrySampleAccum_ = 0;
     int lastMidiNote_ = -1;
     uint32_t midiNoteSeq_ = 0;
     uint64_t midiHitPulseLo_ = 0;

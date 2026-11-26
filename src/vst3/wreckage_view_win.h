@@ -94,6 +94,8 @@ private:
     std::vector<std::wstring> browserCategories_;
     std::vector<std::wstring> browserItems_;
     int selectedCategory_ = -1;
+    int browserCatScroll_ = 0;
+    int browserItemScroll_ = 0;
 
     float uiScale_ = 1.0f;
 };
