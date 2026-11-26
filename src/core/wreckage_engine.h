@@ -210,6 +210,7 @@ public:
             slots_[i].purged = false;
         }
         activeVoices_.store(0, std::memory_order_relaxed);
+        recalcRamBytesLocked();
     }
 
     void clearSlot(int idx) {
@@ -224,6 +225,7 @@ public:
         s.stageX = 0.0f;
         s.stageY = 0.0f;
         s.purged = false;
+        recalcRamBytesLocked();
     }
 
     void deleteWaveItem(int slotIdx, int velLayerIdx, int rrIdx) {
@@ -243,6 +245,7 @@ public:
                 s.stageX = 0.0f;
                 s.stageY = 0.0f;
             }
+            recalcRamBytesLocked();
         }
     }
 
@@ -294,26 +297,18 @@ public:
                 outActiveRR = v.rrIndex;
                 double totalF = static_cast<double>(v.primaryBuf->numFrames());
                 if (totalF > 1.0) {
-                    double actualFrame = v.reverse ? (totalF - 1.0 - v.playPos) : v.playPos;
-                    outPlayheadNorm = std::clamp(static_cast<float>(actualFrame / totalF), 0.0f, 1.0f);
+                    outPlayheadNorm = std::clamp(static_cast<float>(v.playPos / totalF), 0.0f, 1.0f);
                 }
             }
         }
     }
 
     uint64_t totalSampleRamBytes() const {
-        uint64_t bytes = 0;
-        for (const auto& s : slots_) {
-            for (int vl = 0; vl < kMaxVelLayers; ++vl) {
-                for (const auto& it : s.velLayers[vl].rrs) {
-                    for (int m = 0; m < 4; ++m) {
-                        if (it.mics[static_cast<size_t>(m)])
-                            bytes += it.mics[static_cast<size_t>(m)]->numFrames() * 2 * sizeof(float);
-                    }
-                }
-            }
-        }
-        return bytes;
+        return totalRamBytes_.load(std::memory_order_relaxed);
+    }
+
+    bool isIdleSleeping() const {
+        return idleSleeping_.load(std::memory_order_relaxed);
     }
 
     bool isNotePlaying(int midiNote) const {
@@ -326,6 +321,12 @@ public:
         for (auto& v : voices_) v.active = false;
         for (int i = 0; i < 128; ++i) notePlaying_[i].store(0, std::memory_order_relaxed);
         activeVoices_.store(0, std::memory_order_relaxed);
+        roomBus_.reset();
+        hallBus_.reset();
+        subBus_.reset();
+        masterFx_.resetTails();
+        idleSamples_ = 1000000;
+        idleSleeping_.store(true, std::memory_order_relaxed);
     }
 
     // Loads sample respecting Max 4 Velocity Layers and Max 9 Round-Robins per layer
@@ -378,6 +379,7 @@ public:
             s.stageY = 0.0f;
         }
         s.purged = false;
+        recalcRamBytesLocked();
         if (outVelLayer) *outVelLayer = vl;
         if (outRR) *outRR = targetIdx;
         return true;
@@ -419,20 +421,39 @@ public:
         }
     }
 
+    static std::string sanitizeJsonStr(const std::string& in) {
+        std::string out;
+        out.reserve(in.size());
+        for (char c : in) {
+            if (c == '"' || c == '\\' || c == '\n' || c == '\r') continue;
+            out.push_back(c);
+        }
+        return out.empty() ? "SLOT" : out;
+    }
+
     bool exportKitToNm6(const std::filesystem::path& targetPath, const std::string& libName) {
         std::lock_guard<std::mutex> lock(stateMutex_);
         Nm6Pack pack;
-        pack.libraryName = libName;
-        std::string json = "{\"format\":3,\"slots\":[";
+        pack.libraryName = sanitizeJsonStr(libName);
+        std::string json = "{\"format\":4,\"slots\":[";
         for (int i = 0; i < kTotalSlots; ++i) {
             const auto& s = slots_[i];
             if (i > 0) json += ",";
             json += "{\"i\":" + std::to_string(i) +
-                    ",\"n\":\"" + s.name + "\"" +
+                    ",\"n\":\"" + sanitizeJsonStr(s.name) + "\"" +
                     ",\"m\":" + std::to_string(s.midiNote) +
                     ",\"c\":" + std::to_string(s.hasCustomColor ? s.keyColor : 0u) +
                     ",\"x\":" + std::to_string(s.stageX) +
                     ",\"y\":" + std::to_string(s.stageY) +
+                    ",\"g\":" + std::to_string(s.gain) +
+                    ",\"p\":" + std::to_string(s.pitchSemitones) +
+                    ",\"a\":" + std::to_string(s.attackMs) +
+                    ",\"r\":" + std::to_string(s.releaseMs) +
+                    ",\"fr\":" + std::to_string(s.fakeRR ? 1 : 0) +
+                    ",\"fv\":" + std::to_string(s.fakeVel ? 1 : 0) +
+                    ",\"os\":" + std::to_string(s.oneShot ? 1 : 0) +
+                    ",\"cg\":" + std::to_string(s.chokeGroup) +
+                    ",\"rv\":" + std::to_string(s.reverse ? 1 : 0) +
                     ",\"s\":[";
             bool firstSamp = true;
             for (int vl = 0; vl < kMaxVelLayers; ++vl) {
@@ -479,6 +500,15 @@ public:
             slots_[i].hasCustomColor = false;
             slots_[i].stageX = 0.0f;
             slots_[i].stageY = 0.0f;
+            slots_[i].gain = 1.0f;
+            slots_[i].pitchSemitones = 0.0f;
+            slots_[i].attackMs = 0.0f;
+            slots_[i].releaseMs = 4000.0f;
+            slots_[i].fakeRR = false;
+            slots_[i].fakeVel = false;
+            slots_[i].oneShot = true;
+            slots_[i].chokeGroup = 0;
+            slots_[i].reverse = false;
         }
 
         const std::string& js = pack.kitMetadataJson;
@@ -495,17 +525,32 @@ public:
                     auto nEnd = chunk.find("\"", nPos + 5);
                     if (nEnd != std::string::npos) s.name = chunk.substr(nPos + 5, nEnd - (nPos + 5));
                 }
-                auto mPos = chunk.find("\"m\":");
-                if (mPos != std::string::npos) s.midiNote = std::atoi(chunk.c_str() + mPos + 4);
+                auto readIntKey = [&](const char* k, int& dst) {
+                    auto kp = chunk.find(k);
+                    if (kp != std::string::npos) dst = std::atoi(chunk.c_str() + kp + std::strlen(k));
+                };
+                auto readFltKey = [&](const char* k, float& dst) {
+                    auto kp = chunk.find(k);
+                    if (kp != std::string::npos) dst = std::strtof(chunk.c_str() + kp + std::strlen(k), nullptr);
+                };
+                readIntKey("\"m\":", s.midiNote);
                 auto cPos = chunk.find("\"c\":");
                 if (cPos != std::string::npos) {
                     s.keyColor = static_cast<uint32_t>(std::strtoul(chunk.c_str() + cPos + 4, nullptr, 10));
                     s.hasCustomColor = (s.keyColor != 0);
                 }
-                auto xPos = chunk.find("\"x\":");
-                if (xPos != std::string::npos) s.stageX = std::strtof(chunk.c_str() + xPos + 4, nullptr);
-                auto yPos = chunk.find("\"y\":");
-                if (yPos != std::string::npos) s.stageY = std::strtof(chunk.c_str() + yPos + 4, nullptr);
+                readFltKey("\"x\":", s.stageX);
+                readFltKey("\"y\":", s.stageY);
+                readFltKey("\"g\":", s.gain);
+                readFltKey("\"p\":", s.pitchSemitones);
+                readFltKey("\"a\":", s.attackMs);
+                readFltKey("\"r\":", s.releaseMs);
+                int bTmp = 0;
+                if (chunk.find("\"fr\":") != std::string::npos) { readIntKey("\"fr\":", bTmp); s.fakeRR = (bTmp != 0); }
+                if (chunk.find("\"fv\":") != std::string::npos) { readIntKey("\"fv\":", bTmp); s.fakeVel = (bTmp != 0); }
+                if (chunk.find("\"os\":") != std::string::npos) { readIntKey("\"os\":", bTmp); s.oneShot = (bTmp != 0); }
+                readIntKey("\"cg\":", s.chokeGroup);
+                if (chunk.find("\"rv\":") != std::string::npos) { readIntKey("\"rv\":", bTmp); s.reverse = (bTmp != 0); }
 
                 auto sArr = chunk.find("\"s\":[");
                 if (sArr != std::string::npos) {
@@ -532,6 +577,7 @@ public:
             }
             pos = endObj + 2;
         }
+        recalcRamBytesLocked();
         return true;
     }
 
@@ -551,13 +597,29 @@ public:
         }
         if (!lock.owns_lock() && pb.offlineRender) lock.lock();
 
+        int initVoices = 0;
+        for (const auto& v : voices_) if (v.active) ++initVoices;
+        if (initVoices == 0 && idleSleeping_.load(std::memory_order_relaxed)) {
+            std::fill(pb.mainL, pb.mainL + pb.numSamples, 0.0f);
+            std::fill(pb.mainR, pb.mainR + pb.numSamples, 0.0f);
+            for (int b = 0; b < 4; ++b) {
+                if (pb.auxActive[b] && pb.auxL[b] && pb.auxR[b]) {
+                    std::fill(pb.auxL[b], pb.auxL[b] + pb.numSamples, 0.0f);
+                    std::fill(pb.auxR[b], pb.auxR[b] + pb.numSamples, 0.0f);
+                }
+            }
+            activeVoices_.store(0, std::memory_order_relaxed);
+            return;
+        }
+
+        float blockPeak = 0.0f;
         for (int n = 0; n < pb.numSamples; ++n) {
             float sumCloseL = 0.0f, sumCloseR = 0.0f;
             float sumRoomRealL = 0.0f, sumRoomRealR = 0.0f, sendRoomL = 0.0f, sendRoomR = 0.0f;
             float sumHallRealL = 0.0f, sumHallRealR = 0.0f, sendHallL = 0.0f, sendHallR = 0.0f;
             float sumSubRealL  = 0.0f, sumSubRealR  = 0.0f, sendSubL  = 0.0f, sendSubR  = 0.0f;
 
-            for (auto& v : voices_) {
+            if (initVoices > 0) for (auto& v : voices_) {
                 if (!v.active || !v.primaryBuf) continue;
 
                 if (v.choking) {
@@ -699,11 +761,23 @@ public:
             masterFx_.process(mainL, mainR, params_.fx);
             pb.mainL[n] = mainL;
             pb.mainR[n] = mainR;
+            blockPeak = std::max(blockPeak, std::max(std::fabs(mainL), std::fabs(mainR)));
         }
 
         int cnt = 0;
-        for (const auto& v : voices_) if (v.active) ++cnt;
+        if (initVoices > 0) {
+            for (const auto& v : voices_) if (v.active) ++cnt;
+        }
         activeVoices_.store(cnt, std::memory_order_relaxed);
+        if (cnt == 0 && blockPeak < 1e-5f) {
+            idleSamples_ += pb.numSamples;
+            if (idleSamples_ > static_cast<int>(sr_ * 0.25f)) {
+                idleSleeping_.store(true, std::memory_order_relaxed);
+            }
+        } else {
+            idleSamples_ = 0;
+            idleSleeping_.store(false, std::memory_order_relaxed);
+        }
     }
 
 private:
@@ -816,14 +890,11 @@ private:
         lastVoiceRR_.store(chosenRR, std::memory_order_relaxed);
         voiceSeq_.fetch_add(1, std::memory_order_relaxed);
 
+        idleSamples_ = 0;
+        idleSleeping_.store(false, std::memory_order_relaxed);
         double totalF = static_cast<double>(prim->numFrames());
-        if (s.reverse) {
-            v.startFrame = (1.0 - std::clamp(static_cast<double>(mm.endNorm), 0.02, 1.0)) * totalF;
-            v.endFrame   = (1.0 - std::clamp(static_cast<double>(mm.startNorm), 0.0, 0.98)) * totalF;
-        } else {
-            v.startFrame = std::clamp(static_cast<double>(mm.startNorm), 0.0, 0.98) * totalF;
-            v.endFrame   = std::max(v.startFrame + 8.0, std::clamp(static_cast<double>(mm.endNorm), 0.02, 1.0) * totalF);
-        }
+        v.startFrame = std::clamp(static_cast<double>(mm.startNorm), 0.0, 0.98) * totalF;
+        v.endFrame   = std::max(v.startFrame + 8.0, std::clamp(static_cast<double>(mm.endNorm), 0.02, 1.0) * totalF);
         double regLen = std::max(8.0, v.endFrame - v.startFrame);
         v.fadeInFrames  = std::clamp(static_cast<double>(mm.fadeInNorm), 0.0, 0.5) * regLen;
         v.fadeOutFrames = std::clamp(static_cast<double>(mm.fadeOutNorm), 0.0, 0.5) * regLen;
@@ -903,7 +974,25 @@ private:
     std::array<SlotConfig, kTotalSlots> slots_;
     std::array<Voice, kMaxVoices> voices_;
     std::array<std::atomic<int>, 128> notePlaying_{};
+    void recalcRamBytesLocked() {
+        uint64_t bytes = 0;
+        for (const auto& s : slots_) {
+            for (int vl = 0; vl < kMaxVelLayers; ++vl) {
+                for (const auto& it : s.velLayers[vl].rrs) {
+                    for (int m = 0; m < 4; ++m) {
+                        if (it.mics[static_cast<size_t>(m)])
+                            bytes += it.mics[static_cast<size_t>(m)]->numFrames() * 2 * sizeof(float);
+                    }
+                }
+            }
+        }
+        totalRamBytes_.store(bytes, std::memory_order_relaxed);
+    }
+
     std::atomic<int> activeVoices_{0};
+    std::atomic<uint64_t> totalRamBytes_{0};
+    std::atomic<bool> idleSleeping_{true};
+    int idleSamples_ = 1000000;
     std::atomic<int> lastVoiceSlot_{-1};
     std::atomic<int> lastVoiceVel_{-1};
     std::atomic<int> lastVoiceRR_{-1};

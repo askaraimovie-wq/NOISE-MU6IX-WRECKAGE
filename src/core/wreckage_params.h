@@ -46,6 +46,7 @@ enum ParamIDs : uint32_t {
     kParamSatDrive       = 231,
     kParamSatWarmth      = 232,
     kParamSatMix         = 233,
+    kParamSatMode        = 234, // 0:TAPE, 1:TUBE, 2:CRUSH, 3:CLIP
 
     // Delay
     kParamDelayOn        = 240,
@@ -153,17 +154,12 @@ inline float gainDbToLinear(float db) {
     return scale * poly;
 }
 
-// Logarithmic Release mapping: 0.0 -> 10 ms, 0.5 -> 200 ms, 1.0 -> 4000 ms
+// Exact Logarithmic Release mapping: 0.0 -> 10.0 ms, 0.5 -> 200.0 ms, 1.0 -> 4000.0 ms
 inline float releaseNormToMs(float norm01) {
     float n = (norm01 < 0.0f) ? 0.0f : ((norm01 > 1.0f) ? 1.0f : norm01);
-    // 10 * 400^n = 10 * 2^(n * 8.64385619)
-    float x = n * 8.64385619f;
-    int xi = static_cast<int>(x);
-    float xf = x - static_cast<float>(xi);
-    float poly = 1.0f + xf * (0.69314718f + xf * (0.24022651f + xf * 0.05550411f));
-    float scale = 1.0f;
-    for (int i = 0; i < xi && i < 16; ++i) scale *= 2.0f;
-    return 10.0f * scale * poly;
+    if (n <= 0.001f) return 10.0f;
+    if (n >= 0.999f) return 4000.0f;
+    return 10.0f * std::pow(400.0f, n);
 }
 
 inline float releaseMsToNorm(float ms) {

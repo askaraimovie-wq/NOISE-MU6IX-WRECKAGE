@@ -129,40 +129,88 @@ struct Biquad {
     }
 };
 
+// Schroeder All-Pass Diffuser for silky, non-metallic percussion reverb
+struct AllPassDiffuser {
+    std::vector<float> buf;
+    int idx = 0;
+    float g = 0.62f;
+
+    void prepare(int samples, float gain) {
+        buf.assign(static_cast<size_t>(std::max(8, samples)), 0.0f);
+        idx = 0;
+        g = gain;
+    }
+    void reset() {
+        std::fill(buf.begin(), buf.end(), 0.0f);
+        idx = 0;
+    }
+    inline float process(float x) {
+        float d = buf[idx];
+        float v = x + d * g;
+        buf[idx] = v;
+        if (++idx >= static_cast<int>(buf.size())) idx = 0;
+        return d - v * g;
+    }
+};
+
+// 8-Line Modulated FDN + 4-Stage Input Diffuser Reverb (Lush Room / Plate / Hall)
 class StereoSpaceBus {
 public:
     void prepare(float sampleRate, float preDelayMs, float decaySeconds, float hpHz, float lpHz) {
         sr_ = std::max(8000.0f, sampleRate);
-        maxPreSamples_ = std::max(4, static_cast<int>(sr_ * 0.25f));
+        maxPreSamples_ = std::max(8, static_cast<int>(sr_ * 0.25f));
         preBufL_.assign(static_cast<size_t>(maxPreSamples_), 0.0f);
         preBufR_.assign(static_cast<size_t>(maxPreSamples_), 0.0f);
         preIdx_ = 0;
 
-        static constexpr float baseMs[4] = { 29.3f, 37.1f, 47.9f, 61.3f };
+        static constexpr float diffMsL[4] = { 4.3f, 6.7f, 10.1f, 14.9f };
+        static constexpr float diffMsR[4] = { 4.7f, 7.1f, 10.7f, 15.7f };
+        static constexpr float diffG[4]   = { 0.66f, 0.64f, 0.60f, 0.56f };
         for (int i = 0; i < 4; ++i) {
-            int maxLen = std::max(64, static_cast<int>(sr_ * baseMs[i] * 2.6f * 0.001f));
+            diffL_[i].prepare(static_cast<int>(sr_ * diffMsL[i] * 0.001f), diffG[i]);
+            diffR_[i].prepare(static_cast<int>(sr_ * diffMsR[i] * 0.001f), diffG[i]);
+        }
+
+        static constexpr float baseMs[8] = { 23.1f, 29.3f, 34.7f, 41.9f, 47.3f, 53.9f, 61.7f, 71.1f };
+        for (int i = 0; i < 8; ++i) {
+            int maxLen = std::max(128, static_cast<int>(sr_ * baseMs[i] * 2.5f * 0.001f) + 64);
             lines_[i].assign(static_cast<size_t>(maxLen), 0.0f);
-            activeLen_[i] = std::max(32, static_cast<int>(sr_ * baseMs[i] * 1.1f * 0.001f));
+            activeLen_[i] = std::max(48, static_cast<int>(sr_ * baseMs[i] * 0.001f));
             idx_[i] = 0;
             dampState_[i] = 0.0f;
         }
+        lfoPhase_ = 0.0f;
+        lastHp_ = -1.0f; lastLp_ = -1.0f;
         configure(preDelayMs, decaySeconds, 0.65f, hpHz, lpHz);
+        hpL_.reset(); hpR_.reset(); lpL_.reset(); lpR_.reset();
+    }
+
+    void reset() {
+        std::fill(preBufL_.begin(), preBufL_.end(), 0.0f);
+        std::fill(preBufR_.begin(), preBufR_.end(), 0.0f);
+        preIdx_ = 0;
+        for (int i = 0; i < 4; ++i) { diffL_[i].reset(); diffR_[i].reset(); }
+        for (int i = 0; i < 8; ++i) {
+            std::fill(lines_[i].begin(), lines_[i].end(), 0.0f);
+            idx_[i] = 0;
+            dampState_[i] = 0.0f;
+        }
         hpL_.reset(); hpR_.reset(); lpL_.reset(); lpR_.reset();
     }
 
     void configure(float preDelayMs, float decaySeconds, float size01, float hpHz, float lpHz) {
         preDelaySamples_ = std::clamp(static_cast<int>(sr_ * preDelayMs * 0.001f), 1, maxPreSamples_ - 1);
-        static constexpr float baseMs[4] = { 29.3f, 37.1f, 47.9f, 61.3f };
-        float sizeScale = 0.45f + std::clamp(size01, 0.0f, 1.0f) * 1.75f;
+        static constexpr float baseMs[8] = { 23.1f, 29.3f, 34.7f, 41.9f, 47.3f, 53.9f, 61.7f, 71.1f };
+        float sizeScale = 0.45f + std::clamp(size01, 0.0f, 1.0f) * 1.65f;
         float rt = std::max(0.20f, decaySeconds);
-        for (int i = 0; i < 4; ++i) {
-            int maxL = static_cast<int>(lines_[i].size());
-            int len = std::clamp(static_cast<int>(sr_ * baseMs[i] * sizeScale * 0.001f), 32, maxL);
+        for (int i = 0; i < 8; ++i) {
+            int maxL = static_cast<int>(lines_[i].size()) - 24;
+            int len = std::clamp(static_cast<int>(sr_ * baseMs[i] * sizeScale * 0.001f), 40, std::max(40, maxL));
             activeLen_[i] = len;
             if (idx_[i] >= len) idx_[i] = 0;
-            fb_[i] = std::clamp(fastPow10((-3.0f * (static_cast<float>(len) / sr_)) / rt), 0.25f, 0.975f);
+            fb_[i] = std::clamp(fastPow10((-3.0f * (static_cast<float>(len) / sr_)) / rt), 0.20f, 0.982f);
         }
-        dampCoeff_ = std::clamp(1.0f - (lpHz / (sr_ * 0.5f)), 0.10f, 0.85f);
+        dampCoeff_ = std::clamp(1.0f - (lpHz / (sr_ * 0.5f)), 0.08f, 0.86f);
         if (std::fabs(hpHz - lastHp_) > 1.0f) { hpL_.setHighPass(sr_, hpHz); hpR_.setHighPass(sr_, hpHz); lastHp_ = hpHz; }
         if (std::fabs(lpHz - lastLp_) > 5.0f) { lpL_.setLowPass(sr_, lpHz);  lpR_.setLowPass(sr_, lpHz);  lastLp_ = lpHz; }
     }
@@ -176,26 +224,56 @@ public:
         preBufR_[preIdx_] = inR;
         if (++preIdx_ >= maxPreSamples_) preIdx_ = 0;
 
-        float d[4];
+        // 4-stage stereo all-pass diffusion eliminates sharp metallic transients
+        float dfL = pdL, dfR = pdR;
         for (int i = 0; i < 4; ++i) {
-            float s = lines_[i][idx_[i]];
+            dfL = diffL_[i].process(dfL);
+            dfR = diffR_[i].process(dfR);
+        }
+
+        // Gentle chorus-like LFO modulation (~0.65 Hz) for rich lush hall tails
+        lfoPhase_ += (2.0f * kPi * 0.65f) / sr_;
+        if (lfoPhase_ > 2.0f * kPi) lfoPhase_ -= 2.0f * kPi;
+        float modA = std::sin(lfoPhase_) * 5.5f;
+        float modB = std::cos(lfoPhase_) * 5.5f;
+
+        float d[8];
+        for (int i = 0; i < 8; ++i) {
+            int len = activeLen_[i];
+            float s = 0.0f;
+            if (i < 4) {
+                float mod = ((i & 1) == 0) ? modA : modB;
+                float rPos = static_cast<float>(idx_[i]) + mod;
+                while (rPos < 0.0f) rPos += static_cast<float>(len);
+                while (rPos >= static_cast<float>(len)) rPos -= static_cast<float>(len);
+                int i0 = static_cast<int>(rPos);
+                int i1 = (i0 + 1 >= len) ? 0 : (i0 + 1);
+                float frac = rPos - static_cast<float>(i0);
+                s = lines_[i][i0] + frac * (lines_[i][i1] - lines_[i][i0]);
+            } else {
+                s = lines_[i][idx_[i]];
+            }
             dampState_[i] = s * (1.0f - dampCoeff_) + dampState_[i] * dampCoeff_;
             d[i] = dampState_[i] * fb_[i];
         }
 
-        float h0 = 0.5f * (d[0] + d[1] + d[2] + d[3]);
-        float h1 = 0.5f * (d[0] - d[1] + d[2] - d[3]);
-        float h2 = 0.5f * (d[0] + d[1] - d[2] - d[3]);
-        float h3 = 0.5f * (d[0] - d[1] - d[2] + d[3]);
-
-        float inVals[4] = { h0 + pdL * 0.85f, h1 + pdR * 0.85f, h2 + pdL * 0.65f, h3 - pdR * 0.65f };
-        for (int i = 0; i < 4; ++i) {
-            lines_[i][idx_[i]] = inVals[i];
+        // Orthogonal Householder mixing matrix: y_i = d_i - 0.25 * sum(d)
+        float sum8 = (d[0] + d[1] + d[2] + d[3] + d[4] + d[5] + d[6] + d[7]) * 0.25f;
+        float inj[8] = {
+             dfL * 0.55f,  dfR * 0.55f,
+             dfL * 0.45f, -dfR * 0.45f,
+            -dfL * 0.40f,  dfR * 0.40f,
+             dfL * 0.35f, -dfR * 0.35f
+        };
+        for (int i = 0; i < 8; ++i) {
+            lines_[i][idx_[i]] = (d[i] - sum8) + inj[i];
             if (++idx_[i] >= activeLen_[i]) idx_[i] = 0;
         }
 
-        outL = lpL_.process(hpL_.process(1.15f * (d[0] + d[2])));
-        outR = lpR_.process(hpR_.process(1.15f * (d[1] + d[3])));
+        float rawL = 0.62f * (d[0] + d[2] - d[4] + d[6]);
+        float rawR = 0.62f * (d[1] - d[3] + d[5] - d[7]);
+        outL = lpL_.process(hpL_.process(rawL));
+        outR = lpR_.process(hpR_.process(rawR));
     }
 
 private:
@@ -204,61 +282,103 @@ private:
     int preDelaySamples_ = 352;
     int preIdx_ = 0;
     std::vector<float> preBufL_, preBufR_;
-    std::array<std::vector<float>, 4> lines_;
-    std::array<int, 4> activeLen_{{100,100,100,100}};
-    std::array<int, 4> idx_{{0,0,0,0}};
-    std::array<float, 4> fb_{{0.5f,0.5f,0.5f,0.5f}};
-    std::array<float, 4> dampState_{{0,0,0,0}};
-    float dampCoeff_ = 0.4f;
+    std::array<AllPassDiffuser, 4> diffL_, diffR_;
+    std::array<std::vector<float>, 8> lines_;
+    std::array<int, 8> activeLen_{{100,100,100,100,100,100,100,100}};
+    std::array<int, 8> idx_{{0,0,0,0,0,0,0,0}};
+    std::array<float, 8> fb_{{0.5f,0.5f,0.5f,0.5f,0.5f,0.5f,0.5f,0.5f}};
+    std::array<float, 8> dampState_{{0,0,0,0,0,0,0,0}};
+    float lfoPhase_ = 0.0f;
+    float dampCoeff_ = 0.38f;
     float lastHp_ = -1.0f, lastLp_ = -1.0f;
     Biquad hpL_, hpR_, lpL_, lpR_;
 };
 
+// 3-Mode Pro Delay: 0=STEREO, 1=PING-PONG, 2=TAPE (click-free fractional delay smoothing)
 class StereoDelayBus {
 public:
     void prepare(float sr) {
         sr_ = std::max(8000.0f, sr);
-        maxSamples_ = static_cast<int>(sr_ * 1.2f);
+        maxSamples_ = static_cast<int>(sr_ * 1.25f);
         bufL_.assign(static_cast<size_t>(maxSamples_), 0.0f);
         bufR_.assign(static_cast<size_t>(maxSamples_), 0.0f);
         writeIdx_ = 0;
-        hpL_.setHighPass(sr_, 130.0f); hpR_.setHighPass(sr_, 130.0f);
+        curDelaySamp_ = sr_ * 0.24f;
+        tapePhase_ = 0.0f;
+        hpL_.setHighPass(sr_, 120.0f); hpR_.setHighPass(sr_, 120.0f);
         lpL_.setLowPass(sr_, 6500.0f); lpR_.setLowPass(sr_, 6500.0f);
-        hpL_.reset(); hpR_.reset(); lpL_.reset(); lpR_.reset();
+        lastCut_ = 6500.0f;
+        reset();
     }
 
-    inline void process(float inL, float inR, bool vintage, float timeMs, float feedback, float tone01, float width01, float mix01) {
-        int delaySamp = std::clamp(static_cast<int>(sr_ * timeMs * 0.001f), 8, maxSamples_ - 2);
-        int readL = writeIdx_ - delaySamp;
-        if (readL < 0) readL += maxSamples_;
-        int readR = writeIdx_ - static_cast<int>(delaySamp * (0.85f + 0.15f * (1.0f - width01)));
-        if (readR < 0) readR += maxSamples_;
+    void reset() {
+        std::fill(bufL_.begin(), bufL_.end(), 0.0f);
+        std::fill(bufR_.begin(), bufR_.end(), 0.0f);
+        writeIdx_ = 0;
+        hpL_.reset(); hpR_.reset(); lpL_.reset(); lpR_.reset();
+        inL_ = inR_ = 0.0f;
+    }
 
-        float dL = bufL_[readL];
-        float dR = bufR_[readR];
+    inline float readFrac(const std::vector<float>& buf, float delaySamp) const {
+        float rPos = static_cast<float>(writeIdx_) - delaySamp;
+        while (rPos < 0.0f) rPos += static_cast<float>(maxSamples_);
+        while (rPos >= static_cast<float>(maxSamples_)) rPos -= static_cast<float>(maxSamples_);
+        int i0 = static_cast<int>(rPos);
+        int i1 = (i0 + 1 >= maxSamples_) ? 0 : (i0 + 1);
+        float frac = rPos - static_cast<float>(i0);
+        return buf[i0] + frac * (buf[i1] - buf[i0]);
+    }
 
-        float cutHz = 1200.0f + tone01 * 13000.0f;
+    inline void process(float inL, float inR, int mode, float timeMs, float feedback, float tone01, float width01, float mix01) {
+        float targetSamp = std::clamp(sr_ * timeMs * 0.001f, 16.0f, static_cast<float>(maxSamples_ - 32));
+        curDelaySamp_ = curDelaySamp_ * 0.996f + targetSamp * 0.004f;
+
+        float modOffset = 0.0f;
+        if (mode == 2) { // TAPE wow & flutter
+            tapePhase_ += (2.0f * kPi * 1.15f) / sr_;
+            if (tapePhase_ > 2.0f * kPi) tapePhase_ -= 2.0f * kPi;
+            modOffset = std::sin(tapePhase_) * 4.5f;
+        }
+
+        float delL = std::max(8.0f, curDelaySamp_ + modOffset);
+        float delR = (mode == 1)
+            ? delL
+            : std::max(8.0f, curDelaySamp_ * (1.0f - width01 * 0.14f) - modOffset);
+
+        float dL = readFrac(bufL_, delL);
+        float dR = readFrac(bufR_, delR);
+
+        float cutHz = (mode == 2) ? (900.0f + tone01 * 7200.0f) : (1200.0f + tone01 * 13500.0f);
         if (std::fabs(cutHz - lastCut_) > 25.0f) {
             lpL_.setLowPass(sr_, cutHz); lpR_.setLowPass(sr_, cutHz); lastCut_ = cutHz;
         }
         dL = lpL_.process(hpL_.process(dL));
         dR = lpR_.process(hpR_.process(dR));
-        if (vintage) {
-            dL = fastTanh(dL * 1.45f) * 0.85f;
-            dR = fastTanh(dR * 1.45f) * 0.85f;
+
+        if (mode == 2) { // TAPE saturation
+            dL = fastTanh(dL * 1.65f) * 0.84f;
+            dR = fastTanh(dR * 1.65f) * 0.84f;
         }
 
         float fb = std::clamp(feedback, 0.0f, 0.88f);
-        float cross = width01 * 0.65f;
-        float nextL = inL + fb * (dL * (1.0f - cross) + dR * cross);
-        float nextR = inR + fb * (dR * (1.0f - cross) + dL * cross);
+        float nextL = 0.0f, nextR = 0.0f;
+        if (mode == 1) { // PING-PONG: mono input enters L, bounces L -> R -> L
+            float monoIn = 0.5f * (inL + inR);
+            nextL = monoIn + fb * dR;
+            nextR = fb * dL;
+        } else {
+            float cross = width01 * 0.45f;
+            nextL = inL + fb * (dL * (1.0f - cross) + dR * cross);
+            nextR = inR + fb * (dR * (1.0f - cross) + dL * cross);
+        }
 
         bufL_[writeIdx_] = nextL;
         bufR_[writeIdx_] = nextR;
         if (++writeIdx_ >= maxSamples_) writeIdx_ = 0;
 
-        inL_ = inL * (1.0f - mix01 * 0.35f) + dL * mix01;
-        inR_ = inR * (1.0f - mix01 * 0.35f) + dR * mix01;
+        float dryScale = 1.0f - mix01 * 0.30f;
+        inL_ = inL * dryScale + dL * mix01;
+        inR_ = inR * dryScale + dR * mix01;
     }
 
     float outL() const { return inL_; }
@@ -266,8 +386,10 @@ public:
 
 private:
     float sr_ = 44100.0f;
-    int maxSamples_ = 48000;
+    int maxSamples_ = 56000;
     int writeIdx_ = 0;
+    float curDelaySamp_ = 10584.0f;
+    float tapePhase_ = 0.0f;
     std::vector<float> bufL_, bufR_;
     Biquad hpL_, hpR_, lpL_, lpR_;
     float lastCut_ = -1.0f;
@@ -281,8 +403,9 @@ public:
         lp2_.setLowPass(sr, 95.0f, 0.85f);
         subPeak_.setPeaking(sr, 55.0f, 1.1f, 6.0f);
         dc_.setSampleRate(sr);
-        lp1_.reset(); lp2_.reset(); subPeak_.reset(); dc_.reset();
+        reset();
     }
+    void reset() { lp1_.reset(); lp2_.reset(); subPeak_.reset(); dc_.reset(); }
     inline void process(float inL, float inR, float& outL, float& outR) {
         float mono = 0.5f * (inL + inR);
         float sub = lp2_.process(lp1_.process(mono));
@@ -316,12 +439,13 @@ struct MasterFxParams {
     float compMakeupDb = 0.0f;
 
     bool  satOn = false;
+    int   satMode = 0; // 0:TAPE, 1:TUBE, 2:CRUSH, 3:CLIP
     float satDrive = 0.25f;
     float satWarmth = 0.50f;
     float satMix = 0.0f;
 
     bool  delayOn = false;
-    int   delayMode = 0;
+    int   delayMode = 0; // 0:STEREO, 1:PING-PONG, 2:TAPE
     float delayTimeMs = 240.0f;
     float delayFeedback = 0.32f;
     float delayTone = 0.65f;
@@ -329,7 +453,7 @@ struct MasterFxParams {
     float delayMix = 0.22f;
 
     bool  revOn = false;
-    int   revMode = 2;
+    int   revMode = 2; // 0:ROOM, 1:PLATE, 2:HALL
     float revPreDelayMs = 18.0f;
     float revDecaySec = 2.4f;
     float revSize = 0.65f;
@@ -340,7 +464,7 @@ struct MasterFxParams {
     bool  limiterOn = true;
     bool  monoBass = true;
 
-    bool  punishOn = true;
+    bool  punishOn = false;
     float punishAmount = 0.0f;
     PunishMode punishMode = PunishMode::HurtMePlenty;
 };
@@ -350,15 +474,32 @@ public:
     void prepare(float sr) {
         sr_ = std::max(8000.0f, sr);
         dcL_.setSampleRate(sr_); dcR_.setSampleRate(sr_);
+        satDcL_.setSampleRate(sr_); satDcR_.setSampleRate(sr_);
         monoBassL_.setLowPass(sr_, 120.0f); monoBassR_.setLowPass(sr_, 120.0f);
+        satTapeLpL_.setLowPass(sr_, 11500.0f); satTapeLpR_.setLowPass(sr_, 11500.0f);
         delayBus_.prepare(sr_);
         masterRevBus_.prepare(sr_, 18.0f, 2.4f, 120.0f, 8500.0f);
         limRel_ = fastExp(-1.0f / (sr_ * 0.045f));
         lastFiltHash_ = -1.0f;
         lastEqHash_ = -1.0f;
         lastRevHash_ = -1.0f;
+        lastWarmth_ = -99.0f;
         lastCompAttMs_ = -1.0f;
         lastCompRelMs_ = -1.0f;
+        wasDelayOn_ = false;
+        wasRevOn_ = false;
+        resetTails();
+    }
+
+    void resetTails() {
+        delayBus_.reset();
+        masterRevBus_.reset();
+        dcL_.reset(); dcR_.reset();
+        satDcL_.reset(); satDcR_.reset();
+        compEnv_ = 0.0f;
+        lastGrDb_ = 0.0f;
+        outEnv_ = 0.0f;
+        limGain_ = 1.0f;
     }
 
     float currentGrDb() const { return lastGrDb_; }
@@ -443,39 +584,78 @@ public:
             lastGrDb_ = 0.0f;
         }
 
+        // 4-Mode Pro Saturator (0:TAPE, 1:TUBE, 2:CRUSH, 3:CLIP) with Tilt EQ & Auto-Gain
         if (p.satOn && p.satMix > 0.005f) {
-            float drv = 1.0f + p.satDrive * 7.5f;
-            float warmTilt = (p.satWarmth - 0.5f) * 6.0f;
-            if (std::fabs(warmTilt - lastWarmth_) > 0.1f) {
-                satWarmL_.setPeaking(sr_, 160.0f, 0.7f, warmTilt);
-                satWarmR_.setPeaking(sr_, 160.0f, 0.7f, warmTilt);
-                lastWarmth_ = warmTilt;
+            float tiltDb = (p.satWarmth - 0.5f) * 8.0f; // -4 dB (Warm/Dark) .. +4 dB (Bright/Airy)
+            if (std::fabs(tiltDb - lastWarmth_) > 0.05f) {
+                lastWarmth_ = tiltDb;
+                satLowL_.setPeaking(sr_, 160.0f, 0.7f, -tiltDb);
+                satLowR_.setPeaking(sr_, 160.0f, 0.7f, -tiltDb);
+                satHighL_.setPeaking(sr_, 3400.0f, 0.7f, tiltDb);
+                satHighR_.setPeaking(sr_, 3400.0f, 0.7f, tiltDb);
             }
-            float wL = satWarmL_.process(l);
-            float wR = satWarmR_.process(r);
-            float sL = fastTanh(wL * drv) / (1.0f + 0.35f * (drv - 1.0f));
-            float sR = fastTanh(wR * drv) / (1.0f + 0.35f * (drv - 1.0f));
+            float wL = satHighL_.process(satLowL_.process(l));
+            float wR = satHighR_.process(satLowR_.process(r));
+
+            float sL = wL, sR = wR;
+            if (p.satMode == 0) { // TAPE: warm magnetic glue + subtle high rolloff
+                float drv = 1.0f + p.satDrive * 4.5f;
+                float comp = 1.0f / (1.0f + 0.42f * (drv - 1.0f));
+                sL = satTapeLpL_.process(fastTanh(wL * drv) * comp * 1.15f);
+                sR = satTapeLpR_.process(fastTanh(wR * drv) * comp * 1.15f);
+            } else if (p.satMode == 1) { // TUBE: asymmetric even-harmonic triode warmth
+                float drv = 1.0f + p.satDrive * 6.5f;
+                float bias = 0.08f + p.satDrive * 0.14f;
+                float bOff = fastTanh(bias);
+                float comp = 1.0f / (1.0f + 0.45f * (drv - 1.0f));
+                sL = satDcL_.process((fastTanh(wL * drv + bias) - bOff) * comp * 1.20f);
+                sR = satDcR_.process((fastTanh(wR * drv + bias) - bOff) * comp * 1.20f);
+            } else if (p.satMode == 2) { // CRUSH: aggressive transistor overdrive
+                float drv = 1.0f + p.satDrive * 11.0f;
+                float comp = 1.0f / (1.0f + 0.52f * (drv - 1.0f));
+                auto shape = [&](float x) {
+                    float a = x * drv;
+                    return (a / (1.0f + std::fabs(a) * 0.85f)) * comp * 1.25f;
+                };
+                sL = shape(wL);
+                sR = shape(wR);
+            } else { // CLIP: punchy soft-knee drum clipper
+                float drv = 1.0f + p.satDrive * 5.0f;
+                auto clip = [&](float x) {
+                    float a = std::clamp(x * drv, -1.5f, 1.5f);
+                    return (a - (a * a * a) / 6.75f) * (1.0f / (1.0f + 0.38f * (drv - 1.0f))) * 1.12f;
+                };
+                sL = clip(wL);
+                sR = clip(wR);
+            }
             l = l * (1.0f - p.satMix) + sL * p.satMix;
             r = r * (1.0f - p.satMix) + sR * p.satMix;
         }
 
         if (p.delayOn && p.delayMix > 0.005f) {
-            delayBus_.process(l, r, p.delayMode == 1, p.delayTimeMs, p.delayFeedback, p.delayTone, p.delayWidth, p.delayMix);
+            if (!wasDelayOn_) { delayBus_.reset(); wasDelayOn_ = true; }
+            delayBus_.process(l, r, p.delayMode, p.delayTimeMs, p.delayFeedback, p.delayTone, p.delayWidth, p.delayMix);
             l = delayBus_.outL(); r = delayBus_.outR();
+        } else {
+            wasDelayOn_ = false;
         }
 
         if (p.revOn && p.revMix > 0.005f) {
+            if (!wasRevOn_) { masterRevBus_.reset(); wasRevOn_ = true; }
             float revHash = p.revPreDelayMs + p.revDecaySec * 37.0f + p.revSize * 113.0f
                           + p.revLowCutHz * 0.17f + p.revHighCutHz * 0.013f + p.revMode * 10000.0f;
             if (std::fabs(revHash - lastRevHash_) > 0.01f) {
                 lastRevHash_ = revHash;
-                float modeScale = (p.revMode == 0) ? 0.60f : ((p.revMode == 1) ? 0.95f : 1.35f);
-                masterRevBus_.configure(p.revPreDelayMs, p.revDecaySec * modeScale, p.revSize, p.revLowCutHz, p.revHighCutHz);
+                float modeScale = (p.revMode == 0) ? 0.55f : ((p.revMode == 1) ? 0.92f : 1.38f);
+                float sizeBoost = (p.revMode == 0) ? 0.72f : ((p.revMode == 1) ? 0.95f : 1.15f);
+                masterRevBus_.configure(p.revPreDelayMs, p.revDecaySec * modeScale, std::clamp(p.revSize * sizeBoost, 0.0f, 1.0f), p.revLowCutHz, p.revHighCutHz);
             }
             float rL = 0.0f, rR = 0.0f;
             masterRevBus_.process(l, r, rL, rR);
-            l = l * (1.0f - p.revMix * 0.25f) + rL * p.revMix * 1.45f;
-            r = r * (1.0f - p.revMix * 0.25f) + rR * p.revMix * 1.45f;
+            l = l * (1.0f - p.revMix * 0.25f) + rL * p.revMix * 1.40f;
+            r = r * (1.0f - p.revMix * 0.25f) + rR * p.revMix * 1.40f;
+        } else {
+            wasRevOn_ = false;
         }
 
         if (p.monoBass) {
@@ -519,13 +699,14 @@ private:
     float lastFiltHash_ = -1.0f, lastEqHash_ = -1.0f, lastWarmth_ = -99.0f, lastRevHash_ = -1.0f;
     float lastCompAttMs_ = -1.0f, lastCompRelMs_ = -1.0f;
     float compAttCoeff_ = 0.99f, compRelCoeff_ = 0.999f;
+    bool wasDelayOn_ = false, wasRevOn_ = false;
     float lastGrDb_ = 0.0f;
     float outEnv_ = 0.0f;
     Biquad flt1L_, flt1R_, flt2L_, flt2R_;
     Biquad eqLowL_, eqLowR_, eqMidL_, eqMidR_, eqHighL_, eqHighR_;
-    Biquad satWarmL_, satWarmR_;
+    Biquad satLowL_, satLowR_, satHighL_, satHighR_, satTapeLpL_, satTapeLpR_;
     Biquad monoBassL_, monoBassR_;
-    DCBlocker dcL_, dcR_;
+    DCBlocker dcL_, dcR_, satDcL_, satDcR_;
     StereoDelayBus delayBus_;
     StereoSpaceBus masterRevBus_;
     float compEnv_ = 0.0f;
