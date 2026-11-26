@@ -60,6 +60,9 @@ target_link_libraries(WRECKAGE PRIVATE
     sdk
     FLAC::FLAC
 )
+if(MSVC)
+    target_compile_options(WRECKAGE PRIVATE /utf-8)
+endif()
 if(WIN32)
     target_link_libraries(WRECKAGE PRIVATE
         legacy_stdio_definitions d2d1 dwrite ole32 shell32 comdlg32 uuid shlwapi user32 gdi32
