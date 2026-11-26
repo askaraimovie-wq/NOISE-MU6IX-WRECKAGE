@@ -71,10 +71,10 @@ void WreckageProcessor::applyNormalizedParam(ParamID id, ParamValue val) {
     auto& fx = p.fx;
     float f = static_cast<float>(std::clamp(val, 0.0, 1.0));
     switch (id) {
-        case kParamBusCloseGain:   p.busGain[0] = f * 1.25f; break;
-        case kParamBusRoomGain:    p.busGain[1] = f * 1.25f; break;
-        case kParamBusHallGain:    p.busGain[2] = f * 1.25f; break;
-        case kParamBusSubGain:     p.busGain[3] = f * 1.25f; break;
+        case kParamBusCloseGain:   p.busGain[0] = gainDbToLinear(gainNormToDb(f)); break;
+        case kParamBusRoomGain:    p.busGain[1] = gainDbToLinear(gainNormToDb(f)); break;
+        case kParamBusHallGain:    p.busGain[2] = gainDbToLinear(gainNormToDb(f)); break;
+        case kParamBusSubGain:     p.busGain[3] = gainDbToLinear(gainNormToDb(f)); break;
         case kParamBusCloseBypass: p.busBypass[0] = (f >= 0.5f); break;
         case kParamBusRoomBypass:  p.busBypass[1] = (f >= 0.5f); break;
         case kParamBusHallBypass:  p.busBypass[2] = (f >= 0.5f); break;
@@ -207,7 +207,7 @@ tresult PLUGIN_API WreckageProcessor::process(ProcessData& data) {
     float instCpu = (budgetSec > 0.0) ? static_cast<float>(std::clamp((elapsedSec / budgetSec) * 100.0, 0.0, 99.9)) : 0.0f;
     cpuLoadPct_ = cpuLoadPct_ * 0.85f + instCpu * 0.15f;
 
-    if (hadMidiEvent || ++telemetryCounter_ >= 4) {
+    if (hadMidiEvent || ++telemetryCounter_ >= 3) {
         telemetryCounter_ = 0;
         broadcastTelemetryToUi();
     }
@@ -218,7 +218,7 @@ tresult PLUGIN_API WreckageProcessor::setState(IBStream* state) {
     if (!state) return kResultFalse;
     IBStreamer s(state, kLittleEndian);
     int32 ver = 0;
-    if (!s.readInt32(ver) || ver != 5) return kResultFalse;
+    if (!s.readInt32(ver) || ver != 6) return kResultFalse;
 
     auto& p = engine_.params();
     auto& fx = p.fx;
@@ -235,7 +235,7 @@ tresult PLUGIN_API WreckageProcessor::setState(IBStream* state) {
     s.readInt8(b); fx.compOn = (b != 0); s.readFloat(fx.compThreshDb); s.readFloat(fx.compRatio); s.readFloat(fx.compAttackMs); s.readFloat(fx.compReleaseMs); s.readFloat(fx.compKneeDb); s.readFloat(fx.compMakeupDb);
     s.readInt8(b); fx.satOn = (b != 0); s.readFloat(fx.satDrive); s.readFloat(fx.satWarmth); s.readFloat(fx.satMix);
     s.readInt8(b); fx.delayOn = (b != 0); s.readInt32(fx.delayMode); s.readFloat(fx.delayTimeMs); s.readFloat(fx.delayFeedback); s.readFloat(fx.delayTone); s.readFloat(fx.delayWidth); s.readFloat(fx.delayMix);
-    s.readInt8(b); fx.revOn = (b != 0); s.readInt32(fx.revMode); s.readFloat(fx.revPreDelayMs); s.readFloat(fx.revDecaySec); s.readFloat(fx.revSize); s.readFloat(fx.revLowCutHz); s.readFloat(fx.revHighCutHz); s.readFloat(fx.revMix);
+    s.readInt8(b); fx.revOn = (b != 0); s.readInt32(fx.revMode); s.readFloat(fx.revPreDelayMs); s.readFloat(fx.revDecaySec); s.readFloat(fx.revSize); s.writeFloat(fx.revLowCutHz); s.readFloat(fx.revHighCutHz); s.readFloat(fx.revMix);
     s.readInt8(b); fx.limiterOn = (b != 0);
     s.readInt8(b); fx.monoBass = (b != 0);
     s.readInt32(iv); p.velCurve = static_cast<VelocityCurve>(iv);
@@ -248,7 +248,7 @@ tresult PLUGIN_API WreckageProcessor::setState(IBStream* state) {
 tresult PLUGIN_API WreckageProcessor::getState(IBStream* state) {
     if (!state) return kResultFalse;
     IBStreamer s(state, kLittleEndian);
-    s.writeInt32(5);
+    s.writeInt32(6);
 
     const auto& p = engine_.params();
     const auto& fx = p.fx;
@@ -279,23 +279,30 @@ void WreckageProcessor::broadcastSlotSummaryToUi(int slotIdx) {
         auto* attrs = msg->getAttributes();
         const auto& sl = engine_.slot(slotIdx);
         attrs->setInt("slot", slotIdx);
-        attrs->setInt("itemCount", sl.itemCount());
         attrs->setInt("color", static_cast<int64>(sl.hasCustomColor ? sl.keyColor : 0));
         attrs->setInt("midiNote", sl.midiNote);
         attrs->setFloat("x", sl.stageX);
         attrs->setFloat("y", sl.stageY);
         attrs->setInt("fakeRR", sl.fakeRR ? 1 : 0);
         attrs->setInt("fakeVel", sl.fakeVel ? 1 : 0);
+        attrs->setInt("activeVelLayers", sl.activeVelLayerCount());
+        int counts[kMaxVelLayers] = {0};
+        for (int vl = 0; vl < kMaxVelLayers; ++vl) {
+            counts[vl] = sl.rrCountInLayer(vl);
+        }
+        attrs->setBinary("rrCounts", counts, static_cast<uint32>(sizeof(counts)));
         attrs->setBinary("nameUtf8", sl.name.data(), static_cast<uint32>(sl.name.size()));
         sendMessage(msg);
         msg->release();
     }
 }
 
-void WreckageProcessor::broadcastWaveDataToUi(int slotIdx, int itemIdx) {
+void WreckageProcessor::broadcastWaveDataToUi(int slotIdx, int velLayerIdx, int rrIdx) {
     const auto& sl = engine_.slot(slotIdx);
-    if (itemIdx < 0 || itemIdx >= static_cast<int>(sl.items.size())) return;
-    const auto& it = sl.items[static_cast<size_t>(itemIdx)];
+    int vl = std::clamp(velLayerIdx, 0, kMaxVelLayers - 1);
+    const auto& rrs = sl.velLayers[vl].rrs;
+    if (rrIdx < 0 || rrIdx >= static_cast<int>(rrs.size())) return;
+    const auto& it = rrs[static_cast<size_t>(rrIdx)];
     auto prim = it.primarySource();
     if (!prim) return;
 
@@ -303,7 +310,8 @@ void WreckageProcessor::broadcastWaveDataToUi(int slotIdx, int itemIdx) {
         msg->setMessageID("WaveUpdated");
         auto* attrs = msg->getAttributes();
         attrs->setInt("slot", slotIdx);
-        attrs->setInt("item", itemIdx);
+        attrs->setInt("velLayer", vl);
+        attrs->setInt("rr", rrIdx);
         attrs->setFloat("start", it.startNorm);
         attrs->setFloat("end", it.endNorm);
         attrs->setFloat("fadeIn", it.fadeInNorm);
@@ -323,7 +331,14 @@ void WreckageProcessor::broadcastTelemetryToUi() {
         attrs->setFloat("cpuPct", static_cast<double>(cpuLoadPct_));
         attrs->setFloat("grDb", static_cast<double>(engine_.currentGrDb()));
         attrs->setFloat("outLvl", static_cast<double>(engine_.currentOutLevel()));
-        attrs->setFloat("playhead", static_cast<double>(engine_.getSlotPlayheadNorm(selectedUiSlot_)));
+
+        float ph = -1.0f;
+        int actVl = -1, actRr = -1;
+        engine_.getSlotLivePlayback(selectedUiSlot_, ph, actVl, actRr);
+        attrs->setFloat("playhead", static_cast<double>(ph));
+        attrs->setInt("actVelLayer", actVl);
+        attrs->setInt("actRR", actRr);
+
         uint64_t lo = 0, hi = 0;
         for (int n = 0; n < 64; ++n) {
             if (engine_.isNotePlaying(n)) lo |= (1ULL << n);
@@ -357,10 +372,12 @@ tresult PLUGIN_API WreckageProcessor::notify(IMessage* message) {
         return kResultOk;
     }
     if (strcmp(id, "SelectSlot") == 0) {
-        int64 sl = 0; attrs->getInt("slot", sl);
+        int64 sl = 0, vl = 0;
+        attrs->getInt("slot", sl); attrs->getInt("velLayer", vl);
         selectedUiSlot_ = std::clamp(static_cast<int>(sl), 0, kTotalSlots - 1);
-        if (engine_.slot(selectedUiSlot_).itemCount() > 0) {
-            broadcastWaveDataToUi(selectedUiSlot_, 0);
+        int v = std::clamp(static_cast<int>(vl), 0, kMaxVelLayers - 1);
+        if (engine_.slot(selectedUiSlot_).rrCountInLayer(v) > 0) {
+            broadcastWaveDataToUi(selectedUiSlot_, v, 0);
         }
         return kResultOk;
     }
@@ -383,12 +400,14 @@ tresult PLUGIN_API WreckageProcessor::notify(IMessage* message) {
         return kResultOk;
     }
     if (strcmp(id, "DeleteWaveItem") == 0) {
-        int64 sl = 0, item = 0;
-        attrs->getInt("slot", sl); attrs->getInt("item", item);
-        engine_.deleteWaveItem(static_cast<int>(sl), static_cast<int>(item));
-        broadcastSlotSummaryToUi(static_cast<int>(sl));
-        if (engine_.slot(static_cast<int>(sl)).itemCount() > 0) {
-            broadcastWaveDataToUi(static_cast<int>(sl), 0);
+        int64 sl = 0, vl = 0, rr = 0;
+        attrs->getInt("slot", sl); attrs->getInt("velLayer", vl); attrs->getInt("rr", rr);
+        int sIdx = static_cast<int>(sl);
+        int vIdx = static_cast<int>(vl);
+        engine_.deleteWaveItem(sIdx, vIdx, static_cast<int>(rr));
+        broadcastSlotSummaryToUi(sIdx);
+        if (engine_.slot(sIdx).rrCountInLayer(vIdx) > 0) {
+            broadcastWaveDataToUi(sIdx, vIdx, 0);
         }
         broadcastTelemetryToUi();
         return kResultOk;
@@ -429,7 +448,7 @@ tresult PLUGIN_API WreckageProcessor::notify(IMessage* message) {
         attrs->getInt("slot", sl); attrs->getInt("prop", prop); attrs->getInt("ival", ival); attrs->getFloat("fval", fval);
         auto& s = engine_.slot(static_cast<int>(sl));
         switch (prop) {
-            case 0: s.gain = static_cast<float>(fval); break;
+            case 0: s.gain = gainDbToLinear(gainNormToDb(static_cast<float>(fval))); break;
             case 1: s.pitchSemitones = (static_cast<float>(fval) - 0.5f) * 48.0f; break;
             case 2: s.attackMs = static_cast<float>(fval) * 200.0f; break;
             case 3: s.releaseMs = 15.0f + static_cast<float>(fval) * 3985.0f; break;
@@ -446,14 +465,16 @@ tresult PLUGIN_API WreckageProcessor::notify(IMessage* message) {
         return kResultOk;
     }
     if (strcmp(id, "SetWaveEdit") == 0) {
-        int64 sl = 0, item = 0;
+        int64 sl = 0, vl = 0, rr = 0;
         double st = 0.0, en = 1.0, fi = 0.0, fo = 0.0;
-        attrs->getInt("slot", sl); attrs->getInt("item", item);
+        attrs->getInt("slot", sl); attrs->getInt("velLayer", vl); attrs->getInt("rr", rr);
         attrs->getFloat("start", st); attrs->getFloat("end", en);
         attrs->getFloat("fadeIn", fi); attrs->getFloat("fadeOut", fo);
         auto& s = engine_.slot(static_cast<int>(sl));
-        if (item >= 0 && item < static_cast<int>(s.items.size())) {
-            auto& it = s.items[static_cast<size_t>(item)];
+        int vIdx = std::clamp(static_cast<int>(vl), 0, kMaxVelLayers - 1);
+        auto& rrs = s.velLayers[vIdx].rrs;
+        if (rr >= 0 && rr < static_cast<int>(rrs.size())) {
+            auto& it = rrs[static_cast<size_t>(rr)];
             it.startNorm   = std::clamp(static_cast<float>(st), 0.0f, 0.98f);
             it.endNorm     = std::clamp(static_cast<float>(en), it.startNorm + 0.02f, 1.0f);
             it.fadeInNorm  = std::clamp(static_cast<float>(fi), 0.0f, 0.5f);
@@ -462,20 +483,22 @@ tresult PLUGIN_API WreckageProcessor::notify(IMessage* message) {
         return kResultOk;
     }
     if (strcmp(id, "RequestWave") == 0) {
-        int64 sl = 0, item = 0;
-        attrs->getInt("slot", sl); attrs->getInt("item", item);
-        broadcastWaveDataToUi(static_cast<int>(sl), static_cast<int>(item));
+        int64 sl = 0, vl = 0, rr = 0;
+        attrs->getInt("slot", sl); attrs->getInt("velLayer", vl); attrs->getInt("rr", rr);
+        broadcastWaveDataToUi(static_cast<int>(sl), static_cast<int>(vl), static_cast<int>(rr));
         return kResultOk;
     }
     if (strcmp(id, "LoadWav") == 0) {
-        int64 sl = 0; const void* ptr = nullptr; uint32 sz = 0;
-        attrs->getInt("slot", sl);
+        int64 sl = 0, prefVl = -1; const void* ptr = nullptr; uint32 sz = 0;
+        attrs->getInt("slot", sl); attrs->getInt("prefVelLayer", prefVl);
         if (attrs->getBinary("pathUtf8", ptr, sz) == kResultOk && ptr && sz > 0) {
             std::string u8(static_cast<const char*>(ptr), sz);
-            if (engine_.loadSampleIntoSlot(static_cast<int>(sl), pathFromUtf8(u8))) {
-                int newIdx = std::max(0, engine_.slot(static_cast<int>(sl)).itemCount() - 1);
-                broadcastSlotSummaryToUi(static_cast<int>(sl));
-                broadcastWaveDataToUi(static_cast<int>(sl), newIdx);
+            int sIdx = static_cast<int>(sl);
+            if (engine_.loadSampleIntoSlot(sIdx, pathFromUtf8(u8), static_cast<int>(prefVl))) {
+                int vlUse = (prefVl >= 0) ? std::clamp(static_cast<int>(prefVl), 0, kMaxVelLayers - 1) : 0;
+                int rrNew = std::max(0, engine_.slot(sIdx).rrCountInLayer(vlUse) - 1);
+                broadcastSlotSummaryToUi(sIdx);
+                broadcastWaveDataToUi(sIdx, vlUse, rrNew);
                 broadcastTelemetryToUi();
             }
         }
@@ -503,7 +526,11 @@ tresult PLUGIN_API WreckageProcessor::notify(IMessage* message) {
             if (engine_.loadKitFromNm6(pathFromUtf8(u8))) {
                 for (int i = 0; i < kTotalSlots; ++i) {
                     broadcastSlotSummaryToUi(i);
-                    if (engine_.slot(i).itemCount() > 0) broadcastWaveDataToUi(i, 0);
+                    for (int vl = 0; vl < kMaxVelLayers; ++vl) {
+                        if (engine_.slot(i).rrCountInLayer(vl) > 0) {
+                            broadcastWaveDataToUi(i, vl, 0);
+                        }
+                    }
                 }
                 broadcastTelemetryToUi();
             }

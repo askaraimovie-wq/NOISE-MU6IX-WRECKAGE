@@ -5,7 +5,6 @@
 #include "wreckage_dsp.h"
 #include <windowsx.h>
 #include <shobjidl.h>
-#include <shellapi.h>
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -17,7 +16,7 @@ using namespace Steinberg::Vst;
 
 namespace NoiseMu6ix {
 
-static const wchar_t* kWndClassName = L"NoiseMu6ixWreckageD2DViewClass_v105";
+static const wchar_t* kWndClassName = L"NoiseMu6ixWreckageD2DViewClass_v106";
 
 static HINSTANCE getPluginModuleHandle() {
     HINSTANCE hInst = nullptr;
@@ -57,6 +56,12 @@ static std::wstring midiNoteName(int note) {
     int n = std::clamp(note, 0, 127);
     int oct = (n / 12) - 1;
     return std::wstring(kNames[n % 12]) + std::to_wstring(oct);
+}
+
+static void formatDbLabel(wchar_t* dst, size_t cap, float db) {
+    if (db <= -59.0f) swprintf(dst, cap, L"-inf dB");
+    else if (std::fabs(db) < 0.05f) swprintf(dst, cap, L"0.0 dB");
+    else swprintf(dst, cap, L"%+.1f dB", db);
 }
 
 WreckageWinView::WreckageWinView(WreckageController* controller)
@@ -113,7 +118,6 @@ tresult PLUGIN_API WreckageWinView::attached(void* parent, FIDString type) {
         static_cast<HWND>(parent), nullptr, hInst, this);
 
     if (!hwnd_) return kResultFalse;
-    DragAcceptFiles(hwnd_, TRUE);
 
     D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, &d2dFactory_);
     DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED, __uuidof(IDWriteFactory), reinterpret_cast<IUnknown**>(&dwFactory_));
@@ -150,6 +154,12 @@ tresult PLUGIN_API WreckageWinView::onSize(ViewRect* newSize) {
         InvalidateRect(hwnd_, nullptr, FALSE);
     }
     return kResultOk;
+}
+
+bool WreckageWinView::isNotePhysicallyDown(int midiNote) const {
+    if (midiNote < 0 || midiNote >= 128) return false;
+    if (activePressedNote_ >= 0 && midiNote == activePressedNote_) return true;
+    return controller_ && controller_->isMidiNoteLive(midiNote);
 }
 
 void WreckageWinView::createDeviceResources() {
@@ -210,9 +220,9 @@ void WreckageWinView::drawText(const wchar_t* text, float x, float y, float w, f
 void WreckageWinView::drawFader(float x, float y, float w, float h, float val01, const wchar_t* label,
                                 const wchar_t* valStr, const ThemePalette& th, bool accentFill, bool enabled) {
     val01 = std::clamp(val01, 0.0f, 1.0f);
-    drawText(label, x, y - 16.0f, w * 0.72f, 15.0f, enabled ? th.textPrimary : th.textMuted, 10.0f, true);
+    drawText(label, x, y - 16.0f, w * 0.70f, 15.0f, enabled ? th.textPrimary : th.textMuted, 9.6f, true);
     if (valStr && valStr[0] != 0) {
-        drawText(valStr, x + w * 0.65f, y - 16.0f, w * 0.35f, 15.0f, enabled ? th.accent : th.textMuted, 10.0f, true, DWRITE_TEXT_ALIGNMENT_TRAILING);
+        drawText(valStr, x + w * 0.62f, y - 16.0f, w * 0.38f, 15.0f, enabled ? th.accent : th.textMuted, 9.8f, true, DWRITE_TEXT_ALIGNMENT_TRAILING);
     }
     brush_->SetColor(toD2D(th.faderTrack));
     rt_->FillRectangle(D2D1::RectF(x, y, x + w, y + h), brush_);
@@ -266,7 +276,6 @@ void WreckageWinView::drawHeader(const ThemePalette& th) {
     drawText(L"WRECKAGE", 14, 17, 178, 38, th.textPrimary, 30.0f, true);
     drawText(L"v" WRECKAGE_VERSION_STR, 184, 39, 44, 15, th.accent, 9.5f, true);
 
-    // Preset Box (shows DEFAULT by default) + Direct SAVE Button
     brush_->SetColor(toD2D(th.panelBg));
     rt_->FillRectangle(D2D1::RectF(230, 12, 512, 56), brush_);
     brush_->SetColor(toD2D(th.border));
@@ -284,7 +293,6 @@ void WreckageWinView::drawHeader(const ThemePalette& th) {
     rt_->DrawRectangle(D2D1::RectF(518, 12, 582, 56), brush_, 1.5f);
     drawText(savedFlash ? L"SAVED!" : L"SAVE", 518, 12, 64, 44, 0xFFFFFF, 11.0f, true, DWRITE_TEXT_ALIGNMENT_CENTER);
 
-    // Telemetry Readout (VOX, RAM, CPU %, ENGINE: ACTIVE/IDLE) + Panic (!) + SET
     brush_->SetColor(toD2D(th.panelBg));
     rt_->FillRectangle(D2D1::RectF(588, 12, 746, 56), brush_);
     brush_->SetColor(toD2D(th.border));
@@ -326,13 +334,13 @@ void WreckageWinView::drawTabs(const ThemePalette& th) {
 }
 
 void WreckageWinView::drawSourceTab(const ThemePalette& th) {
-    // LEFT: Piano Key Mapping Board (12 keys per bank: C..B) + LOAD WAV / SAVE AS / CLEAR / RESET
+    // LEFT: Piano Key Map (Black keys stay cleanly black when empty; selected key shown with accent border/badge)
     brush_->SetColor(toD2D(th.panelBg));
     rt_->FillRectangle(D2D1::RectF(16, 118, 412, 626), brush_);
     brush_->SetColor(toD2D(th.border));
     rt_->DrawRectangle(D2D1::RectF(16, 118, 412, 626), brush_, 1.6f);
 
-    drawText(L"PIANO KEY MAP  (DROP OR LOAD WAV | DBL-CLK NAME)", 24, 124, 382, 22, th.textPrimary, 9.5f, true);
+    drawText(L"PIANO KEY MAP  (+ LOAD WAV | DBL-CLK NAME)", 24, 124, 382, 22, th.textPrimary, 9.8f, true);
 
     const wchar_t* banks[3] = { L"BANK 1 (C3-B3)", L"BANK 2 (C4-B4)", L"BANK 3 (C5-B5)" };
     for (int b = 0; b < 3; ++b) {
@@ -344,37 +352,34 @@ void WreckageWinView::drawSourceTab(const ThemePalette& th) {
         drawText(banks[b], bx, 150, 120, 26, b == activeBank_ ? th.panelBg : th.textPrimary, 9.8f, true, DWRITE_TEXT_ALIGNMENT_CENTER);
     }
 
-    // Piano Roll Key Map (x: 26..402, y: 184..556)
     float pmX = 26.0f, pmY = 184.0f, pmW = 376.0f, pmH = 372.0f;
     float wKeyW = pmW / 7.0f;
     static const int kWhiteSemis[7] = { 0, 2, 4, 5, 7, 9, 11 };
     static const int kBlackSemis[5] = { 1, 3, 6, 8, 10 };
     static const int kBlackAfterWhiteIdx[5] = { 0, 1, 3, 4, 5 };
 
+    // 7 White keys
     for (int w = 0; w < 7; ++w) {
         int semi = kWhiteSemis[w];
         int sIdx = activeBank_ * 12 + semi;
         const auto& sl = controller_->slotMirror(sIdx);
         bool sel = (sIdx == selectedSlot_);
-        bool playing = (sl.midiNote == activePressedNote_) || controller_->isMidiNoteLive(sl.midiNote);
+        bool hasSamp = sl.hasAnySample();
         float kx = pmX + w * wKeyW;
 
-        uint32_t fillCol = 0xFFFFFF;
-        if (playing) fillCol = 0xFFFFFF;
-        else if (sl.itemCount > 0 && sl.hasCustomColor) fillCol = sl.keyColor;
-        else if (sel) fillCol = 0xEFECE4;
-
+        uint32_t fillCol = (hasSamp && sl.hasCustomColor) ? sl.keyColor : (sel ? 0xF3E6DC : 0xFFFFFF);
         brush_->SetColor(toD2D(fillCol));
         rt_->FillRectangle(D2D1::RectF(kx, pmY, kx + wKeyW, pmY + pmH), brush_);
         brush_->SetColor(toD2D(sel ? th.accent : 0x181C22));
-        rt_->DrawRectangle(D2D1::RectF(kx, pmY, kx + wKeyW, pmY + pmH), brush_, sel ? 2.5f : 1.2f);
+        rt_->DrawRectangle(D2D1::RectF(kx, pmY, kx + wKeyW, pmY + pmH), brush_, sel ? 2.6f : 1.2f);
 
-        uint32_t txtCol = (!playing && sl.itemCount > 0 && sl.hasCustomColor) ? 0xFFFFFF : 0x181C22;
-        std::wstring lbl = midiNoteName(sl.midiNote) + L"\n" + ((sl.itemCount > 0) ? toWide(sl.name) : L"EMPTY");
+        uint32_t txtCol = (hasSamp && sl.hasCustomColor) ? 0xFFFFFF : 0x181C22;
+        std::wstring lbl = midiNoteName(sl.midiNote) + L"\n" + (hasSamp ? toWide(sl.name) : L"EMPTY");
         drawText(lbl.c_str(), kx + 2, pmY + pmH * 0.56f, wKeyW - 4, pmH * 0.40f,
                  txtCol, 9.0f, true, DWRITE_TEXT_ALIGNMENT_CENTER);
     }
 
+    // 5 Black keys: always dark (#181C22) unless a sample is loaded on that black key; selected shown with border/dot
     float bKeyW = wKeyW * 0.64f;
     float bKeyH = pmH * 0.50f;
     for (int bk = 0; bk < 5; ++bk) {
@@ -382,25 +387,23 @@ void WreckageWinView::drawSourceTab(const ThemePalette& th) {
         int sIdx = activeBank_ * 12 + semi;
         const auto& sl = controller_->slotMirror(sIdx);
         bool sel = (sIdx == selectedSlot_);
-        bool playing = (sl.midiNote == activePressedNote_) || controller_->isMidiNoteLive(sl.midiNote);
+        bool hasSamp = sl.hasAnySample();
         float kx = pmX + (kBlackAfterWhiteIdx[bk] + 1) * wKeyW - bKeyW * 0.5f;
 
-        uint32_t fillCol = 0x181C22;
-        if (playing) fillCol = 0xFFFFFF;
-        else if (sl.itemCount > 0 && sl.hasCustomColor) fillCol = sl.keyColor;
-        else if (sel) fillCol = th.accent;
-
+        uint32_t fillCol = (hasSamp && sl.hasCustomColor) ? sl.keyColor : 0x181C22;
         brush_->SetColor(toD2D(fillCol));
         rt_->FillRectangle(D2D1::RectF(kx, pmY, kx + bKeyW, pmY + bKeyH), brush_);
-        brush_->SetColor(toD2D(sel ? 0xFFFFFF : 0x000000));
+        brush_->SetColor(toD2D(sel ? th.accent : 0x000000));
         rt_->DrawRectangle(D2D1::RectF(kx, pmY, kx + bKeyW, pmY + bKeyH), brush_, sel ? 2.2f : 1.0f);
+        if (sel) {
+            brush_->SetColor(toD2D(th.accent));
+            rt_->FillEllipse(D2D1::Ellipse(D2D1::Point2F(kx + bKeyW * 0.5f, pmY + bKeyH - 10.0f), 4.5f, 4.5f), brush_);
+        }
 
-        uint32_t txtCol = playing ? 0x181C22 : 0xFFFFFF;
-        std::wstring bLbl = midiNoteName(sl.midiNote) + (sl.itemCount > 0 ? (L"\n" + toWide(sl.name)) : L"");
-        drawText(bLbl.c_str(), kx + 1, pmY + 6.0f, bKeyW - 2, bKeyH - 18.0f, txtCol, 7.8f, true, DWRITE_TEXT_ALIGNMENT_CENTER);
+        std::wstring bLbl = midiNoteName(sl.midiNote) + (hasSamp ? (L"\n" + toWide(sl.name)) : L"");
+        drawText(bLbl.c_str(), kx + 1, pmY + 6.0f, bKeyW - 2, bKeyH - 18.0f, 0xFFFFFF, 7.8f, true, DWRITE_TEXT_ALIGNMENT_CENTER);
     }
 
-    // Bottom Left 4 Buttons: + WAV | SAVE AS | CLEAR | RESET
     auto drawBottomBtn = [&](float x, float w, const wchar_t* label, bool primary) {
         brush_->SetColor(toD2D(primary ? th.accent : th.headerBg));
         rt_->FillRectangle(D2D1::RectF(x, 568, x + w, 610), brush_);
@@ -413,45 +416,72 @@ void WreckageWinView::drawSourceTab(const ThemePalette& th) {
     drawBottomBtn(218, 90, L"CLEAR KEY",  false);
     drawBottomBtn(314, 88, L"RESET KIT",  false);
 
-    // RIGHT: Full-Width Wave Editor (with 1, 2, 3... RR Tabs + DEL button + Live Playhead + Fade Shading + Reverse Preview)
+    // RIGHT: Velocity Layers (Max 4: V1..V4) + Round-Robins (Max 9: 1..9 + DEL) + Wide Wave Editor
     auto& sl = controller_->slotMirror(selectedSlot_);
     brush_->SetColor(toD2D(th.panelBg));
     rt_->FillRectangle(D2D1::RectF(428, 118, 824, 626), brush_);
     brush_->SetColor(toD2D(th.border));
     rt_->DrawRectangle(D2D1::RectF(428, 118, 824, 626), brush_, 1.6f);
 
-    drawText(L"WAVE EDITOR:", 440, 124, 92, 24, th.textPrimary, 10.0f, true);
-    int nItems = sl.itemCount;
-    if (selectedWaveItem_ >= nItems) selectedWaveItem_ = std::max(0, nItems - 1);
-    for (int k = 0; k < std::min(nItems, 7); ++k) {
-        float bx = 534.0f + k * 30.0f;
-        bool activeW = (k == selectedWaveItem_);
-        brush_->SetColor(toD2D(activeW ? th.accent : th.headerBg));
-        rt_->FillRectangle(D2D1::RectF(bx, 124, bx + 26, 148), brush_);
-        brush_->SetColor(toD2D(th.border));
-        rt_->DrawRectangle(D2D1::RectF(bx, 124, bx + 26, 148), brush_, 1.2f);
-        std::wstring num = std::to_wstring(k + 1);
-        drawText(num.c_str(), bx, 124, 26, 24, activeW ? 0xFFFFFF : th.textPrimary, 10.0f, true, DWRITE_TEXT_ALIGNMENT_CENTER);
+    // Sync active playing RR/Vel layer automatically when a new note plays
+    int actVl = controller_->liveActiveVelLayer();
+    int actRr = controller_->liveActiveRR();
+    if (actVl >= 0 && actVl < kMaxVelLayers && actRr >= 0 && actRr < kMaxRoundRobins) {
+        if (controller_->isNotePlaying(sl.midiNote) || activePressedNote_ == sl.midiNote) {
+            selectedVelLayer_ = actVl;
+            selectedRR_ = actRr;
+        }
     }
 
-    // DEL button for selected RR / Wave item
-    if (nItems > 0) {
+    selectedVelLayer_ = std::clamp(selectedVelLayer_, 0, kMaxVelLayers - 1);
+    int nRRs = sl.rrCountInLayer(selectedVelLayer_);
+    if (selectedRR_ >= nRRs) selectedRR_ = std::max(0, nRRs - 1);
+
+    // Row 1 (y: 123..145): VEL LAYERS (V1..V4, max 4) on left + RR SLOTS (1..9, max 9) & DEL on right
+    drawText(L"VEL:", 438, 123, 30, 22, th.textPrimary, 9.2f, true);
+    for (int v = 0; v < kMaxVelLayers; ++v) {
+        float vx = 468.0f + v * 25.0f;
+        bool hasV = sl.rrCounts[v] > 0;
+        bool selV = (v == selectedVelLayer_);
+        brush_->SetColor(toD2D(selV ? th.accent : (hasV ? th.panelBg : th.headerBg)));
+        rt_->FillRectangle(D2D1::RectF(vx, 123, vx + 22, 145), brush_);
+        brush_->SetColor(toD2D(th.border));
+        rt_->DrawRectangle(D2D1::RectF(vx, 123, vx + 22, 145), brush_, 1.1f);
+        wchar_t vLbl[8];
+        swprintf(vLbl, 8, L"V%d", v + 1);
+        drawText(vLbl, vx, 123, 22, 22, selV ? 0xFFFFFF : th.textPrimary, 8.8f, true, DWRITE_TEXT_ALIGNMENT_CENTER);
+    }
+
+    drawText(L"RR:", 572, 123, 22, 22, th.textPrimary, 9.2f, true);
+    for (int r = 0; r < kMaxRoundRobins; ++r) {
+        float rx = 594.0f + r * 19.0f;
+        bool exists = (r < nRRs);
+        bool selR = (exists && r == selectedRR_);
+        brush_->SetColor(toD2D(selR ? th.accent : (exists ? th.panelBg : th.headerBg)));
+        rt_->FillRectangle(D2D1::RectF(rx, 123, rx + 17, 145), brush_);
+        brush_->SetColor(toD2D(th.border));
+        rt_->DrawRectangle(D2D1::RectF(rx, 123, rx + 17, 145), brush_, 1.0f);
+        std::wstring rLbl = std::to_wstring(r + 1);
+        drawText(rLbl.c_str(), rx, 123, 17, 22, selR ? 0xFFFFFF : (exists ? th.textPrimary : th.textMuted), 8.2f, true, DWRITE_TEXT_ALIGNMENT_CENTER);
+    }
+
+    if (nRRs > 0) {
         brush_->SetColor(toD2D(th.headerBg));
-        rt_->FillRectangle(D2D1::RectF(756, 124, 812, 148), brush_);
+        rt_->FillRectangle(D2D1::RectF(768, 123, 812, 145), brush_);
         brush_->SetColor(toD2D(th.border));
-        rt_->DrawRectangle(D2D1::RectF(756, 124, 812, 148), brush_, 1.2f);
-        drawText(L"DEL", 756, 124, 56, 24, th.accent, 9.5f, true, DWRITE_TEXT_ALIGNMENT_CENTER);
+        rt_->DrawRectangle(D2D1::RectF(768, 123, 812, 145), brush_, 1.1f);
+        drawText(L"DEL", 768, 123, 44, 22, th.accent, 8.5f, true, DWRITE_TEXT_ALIGNMENT_CENTER);
     }
 
-    // Full-width Wave Editor Box (x: 440..812, y: 154..310)
-    float wx = 440.0f, wy = 154.0f, ww = 372.0f, wh = 156.0f;
+    // Full-width Wave Editor Box (x: 440..812, y: 151..310)
+    float wx = 440.0f, wy = 151.0f, ww = 372.0f, wh = 159.0f;
     brush_->SetColor(toD2D(th.bg));
     rt_->FillRectangle(D2D1::RectF(wx, wy, wx + ww, wy + wh), brush_);
     brush_->SetColor(toD2D(th.border));
     rt_->DrawRectangle(D2D1::RectF(wx, wy, wx + ww, wy + wh), brush_, 1.3f);
 
-    if (nItems > 0 && selectedWaveItem_ < static_cast<int>(sl.waveItems.size())) {
-        const auto& wi = sl.waveItems[static_cast<size_t>(selectedWaveItem_)];
+    if (nRRs > 0 && selectedRR_ < static_cast<int>(sl.velLayers[selectedVelLayer_].rrs.size())) {
+        const auto& wi = sl.velLayers[selectedVelLayer_].rrs[static_cast<size_t>(selectedRR_)];
         float midY = wy + wh * 0.5f;
         brush_->SetColor(toD2D(th.textMuted, 0.3f));
         rt_->DrawLine(D2D1::Point2F(wx, midY), D2D1::Point2F(wx + ww, midY), brush_, 1.0f);
@@ -462,7 +492,6 @@ void WreckageWinView::drawSourceTab(const ThemePalette& th) {
         float xFadeIn  = xStart + wi.fadeInNorm * regW;
         float xFadeOut = xEnd - wi.fadeOutNorm * regW;
 
-        // Draw waveform bars with visual Fade-In / Fade-Out amplitude shaping & Reverse flip
         float barW = ww / static_cast<float>(kWavePeakBins);
         for (int b = 0; b < kWavePeakBins; ++b) {
             int srcBin = sl.reverse ? (kWavePeakBins - 1 - b) : b;
@@ -485,7 +514,6 @@ void WreckageWinView::drawSourceTab(const ThemePalette& th) {
             rt_->FillRectangle(D2D1::RectF(bxPos, midY - hHalf, bxPos + barW, midY + hHalf), brush_);
         }
 
-        // Visual shaded fade triangles so Fade In / Fade Out is crystal clear
         if (xFadeIn > xStart + 2.0f) {
             brush_->SetColor(toD2D(th.accent, 0.16f));
             rt_->FillRectangle(D2D1::RectF(xStart, wy, xFadeIn, wy + wh), brush_);
@@ -495,7 +523,6 @@ void WreckageWinView::drawSourceTab(const ThemePalette& th) {
             rt_->FillRectangle(D2D1::RectF(xFadeOut, wy, xEnd, wy + wh), brush_);
         }
 
-        // Start & End Draggable Vertical Markers + Fade Handles
         brush_->SetColor(toD2D(th.accent));
         rt_->DrawLine(D2D1::Point2F(xStart, wy), D2D1::Point2F(xStart, wy + wh), brush_, 2.2f);
         rt_->DrawLine(D2D1::Point2F(xEnd, wy),   D2D1::Point2F(xEnd, wy + wh),   brush_, 2.2f);
@@ -504,7 +531,6 @@ void WreckageWinView::drawSourceTab(const ThemePalette& th) {
         rt_->FillRectangle(D2D1::RectF(xFadeIn - 4.5f, wy + 4.0f, xFadeIn + 4.5f, wy + 13.0f), brush_);
         rt_->FillRectangle(D2D1::RectF(xFadeOut - 4.5f, wy + 4.0f, xFadeOut + 4.5f, wy + 13.0f), brush_);
 
-        // Live Moving Playhead Line across Wave Editor when note plays!
         float ph = controller_->livePlayheadNorm();
         if (ph >= 0.0f && ph <= 1.0f) {
             float dispPh = sl.reverse ? (1.0f - ph) : ph;
@@ -513,10 +539,9 @@ void WreckageWinView::drawSourceTab(const ThemePalette& th) {
             rt_->DrawLine(D2D1::Point2F(phX, wy), D2D1::Point2F(phX, wy + wh), brush_, 2.4f);
         }
     } else {
-        drawText(L"CLICK '+ LOAD WAV' OR DROP .WAV ON ANY KEY", wx, wy, ww, wh, th.textMuted, 10.5f, true, DWRITE_TEXT_ALIGNMENT_CENTER);
+        drawText(L"CLICK '+ LOAD WAV' TO LOAD SAMPLES (MAX 4 VEL x 9 RR)", wx, wy, ww, wh, th.textMuted, 10.0f, true, DWRITE_TEXT_ALIGNMENT_CENTER);
     }
 
-    // Bright Key Color Swatches
     drawText(L"COLOR:", 440, 320, 52, 20, th.textMuted, 9.5f, true);
     for (int c = 0; c < kNumKeyColors; ++c) {
         float sx = 496.0f + c * 26.0f;
@@ -526,7 +551,6 @@ void WreckageWinView::drawSourceTab(const ThemePalette& th) {
         rt_->DrawRectangle(D2D1::RectF(sx, 320, sx + 21, 338), brush_, (sl.hasCustomColor && sl.keyColor == kStudioKeyColors[c]) ? 2.4f : 1.0f);
     }
 
-    // Per-Key FAKE RR & FAKE VEL + Global FAKE MIC
     bool fMic = controller_->getParamNormalized(kParamGlobalFakeMic) >= 0.5;
     const wchar_t* gLabels[3] = {
         sl.fakeRR  ? L"KEY FAKE RR: ON"  : L"KEY FAKE RR: OFF",
@@ -543,7 +567,6 @@ void WreckageWinView::drawSourceTab(const ThemePalette& th) {
         drawText(gLabels[g], px, 348, 118, 28, gStates[g] ? 0xFFFFFF : th.textPrimary, 9.0f, true, DWRITE_TEXT_ALIGNMENT_CENTER);
     }
 
-    // Trigger Mode Row (ONE-SHOT / GATE | CHOKE | REVERSE)
     std::wstring m1 = sl.oneShot ? L"MODE: ONE-SHOT" : L"MODE: GATE";
     std::wstring m2 = sl.chokeGroup == 0 ? L"CHOKE: OFF" : (L"CHOKE: " + std::to_wstring(sl.chokeGroup));
     std::wstring m3 = sl.reverse ? L"REVERSE: ON" : L"REVERSE: OFF";
@@ -558,21 +581,21 @@ void WreckageWinView::drawSourceTab(const ThemePalette& th) {
         drawText(dModes[d], dx, 384, 118, 28, dStates[d] ? th.panelBg : th.textPrimary, 9.5f, true, DWRITE_TEXT_ALIGNMENT_CENTER);
     }
 
-    // 4 Faders (Gain 80%, Pitch 0 st, Attack ms, Release ms)
+    // 4 Faders: GAIN in dB (0.0 dB default), PITCH in st (0.0 st default), ATTACK ms, RELEASE ms
     wchar_t vGain[32], vPitch[32], vAtt[32], vRel[32];
-    swprintf(vGain,  32, L"%d%%", static_cast<int>(std::round(sl.gain * 100.0f)));
-    float stVal = (sl.pitch - 0.5f) * 48.0f;
-    swprintf(vPitch, 32, L"%+.1f st", stVal);
+    formatDbLabel(vGain, 32, gainNormToDb(sl.gainNorm));
+    swprintf(vPitch, 32, L"%+.1f st", (sl.pitch - 0.5f) * 48.0f);
     swprintf(vAtt,   32, L"%.0f ms", sl.attack * 200.0f);
     swprintf(vRel,   32, L"%.0f ms", 15.0f + sl.release * 3985.0f);
 
-    drawFader(440, 442, 368, 15, sl.gain,    L"GAIN (DBL-CLICK = 80%)",   vGain,  th);
-    drawFader(440, 490, 368, 15, sl.pitch,   L"PITCH (DBL-CLICK = 0 st)", vPitch, th);
-    drawFader(440, 538, 368, 15, sl.attack,  L"ATTACK",                   vAtt,   th);
-    drawFader(440, 586, 368, 15, sl.release, L"RELEASE / DECAY",          vRel,   th);
+    drawFader(440, 442, 368, 15, sl.gainNorm, L"GAIN (DBL-CLICK = 0.0 dB)", vGain,  th);
+    drawFader(440, 490, 368, 15, sl.pitch,    L"PITCH (DBL-CLICK = 0 st)",  vPitch, th);
+    drawFader(440, 538, 368, 15, sl.attack,   L"ATTACK",                    vAtt,   th);
+    drawFader(440, 586, 368, 15, sl.release,  L"RELEASE / DECAY",           vRel,   th);
 }
 
 void WreckageWinView::drawStageTab(const ThemePalette& th) {
+    // Clean STAGE & MIX tab: NO DRUM/MIX side buttons; Stage X/Y on top + 4 Mic dB Faders below
     brush_->SetColor(toD2D(th.panelBg));
     rt_->FillRectangle(D2D1::RectF(16, 116, 824, 626), brush_);
     brush_->SetColor(toD2D(th.border));
@@ -594,16 +617,16 @@ void WreckageWinView::drawStageTab(const ThemePalette& th) {
     drawMiniBtn(714, 96,  L"CENTER ALL", false);
 
     brush_->SetColor(toD2D(th.bg));
-    rt_->FillRectangle(D2D1::RectF(32, 156, 808, 374), brush_);
+    rt_->FillRectangle(D2D1::RectF(32, 156, 808, 366), brush_);
     brush_->SetColor(toD2D(th.border));
-    rt_->DrawRectangle(D2D1::RectF(32, 156, 808, 374), brush_, 1.4f);
+    rt_->DrawRectangle(D2D1::RectF(32, 156, 808, 366), brush_, 1.4f);
 
     auto stageToScreen = [](float sx, float sy, float& outX, float& outY) {
         float ny = std::clamp(sy, 0.0f, 1.0f);
         float nx = std::clamp(sx, -1.0f, 1.0f);
         float halfW = 360.0f - ny * 130.0f;
         outX = 420.0f + nx * halfW;
-        outY = 360.0f - ny * 188.0f;
+        outY = 352.0f - ny * 180.0f;
     };
 
     brush_->SetColor(toD2D(th.textMuted, 0.35f));
@@ -627,19 +650,19 @@ void WreckageWinView::drawStageTab(const ThemePalette& th) {
     }
 
     drawText(L"BACK  (HALL / DEPTH Y=100%)", 32, 156, 776, 16, th.textMuted, 9.0f, true, DWRITE_TEXT_ALIGNMENT_CENTER);
-    drawText(L"FRONT CENTER (X=0, Y=0  |  DBL-CLICK DOT TO RESET)", 32, 358, 776, 16, th.textMuted, 9.0f, true, DWRITE_TEXT_ALIGNMENT_CENTER);
+    drawText(L"FRONT CENTER (X=0, Y=0  |  DBL-CLICK DOT TO RESET)", 32, 350, 776, 16, th.textMuted, 9.0f, true, DWRITE_TEXT_ALIGNMENT_CENTER);
 
     int loadedInBank = 0;
     for (int i = 0; i < 12; ++i) {
-        if (controller_->slotMirror(activeBank_ * 12 + i).itemCount > 0) ++loadedInBank;
+        if (controller_->slotMirror(activeBank_ * 12 + i).hasAnySample()) ++loadedInBank;
     }
     if (loadedInBank == 0) {
-        drawText(L"STAGE IS EMPTY  —  LOAD .WAV SAMPLES IN 'SOURCE' TO PLACE INSTRUMENTS", 32, 240, 776, 30, th.textMuted, 11.5f, true, DWRITE_TEXT_ALIGNMENT_CENTER);
+        drawText(L"STAGE IS EMPTY  —  LOAD .WAV SAMPLES IN 'SOURCE' TO PLACE INSTRUMENTS", 32, 236, 776, 30, th.textMuted, 11.5f, true, DWRITE_TEXT_ALIGNMENT_CENTER);
     }
 
     auto drawOneStageDot = [&](int sIdx, int displayNum, bool isSelected) {
         const auto& sl = controller_->slotMirror(sIdx);
-        if (sl.itemCount <= 0) return;
+        if (!sl.hasAnySample()) return;
         float nx, ny;
         stageToScreen(sl.stageX, sl.stageY, nx, ny);
         float rad = isSelected ? 15.5f : 11.5f;
@@ -666,58 +689,29 @@ void WreckageWinView::drawStageTab(const ThemePalette& th) {
     wchar_t vX[32], vY[32];
     swprintf(vX, 32, L"%+d%%", static_cast<int>(std::round(selSl.stageX * 100.0f)));
     swprintf(vY, 32, L"%d%%",  static_cast<int>(std::round(selSl.stageY * 100.0f)));
-    drawFader(32,  398, 376, 13, (selSl.stageX + 1.0f) * 0.5f, L"STAGE X (PAN L/R  |  DBL-CLICK = 0)", vX, th);
-    drawFader(432, 398, 376, 13, selSl.stageY,                 L"STAGE Y (DEPTH    |  DBL-CLICK = 0)", vY, th);
+    drawFader(32,  392, 376, 13, (selSl.stageX + 1.0f) * 0.5f, L"STAGE X (PAN L/R  |  DBL-CLICK = 0)", vX, th);
+    drawFader(432, 392, 376, 13, selSl.stageY,                 L"STAGE Y (DEPTH    |  DBL-CLICK = 0)", vY, th);
 
-    brush_->SetColor(toD2D(stageSubMode_ == 0 ? th.border : th.headerBg));
-    rt_->FillRectangle(D2D1::RectF(32, 424, 114, 612), brush_);
-    brush_->SetColor(toD2D(th.border));
-    rt_->DrawRectangle(D2D1::RectF(32, 424, 114, 612), brush_, 1.5f);
-    drawText(L"DRUM", 32, 424, 82, 188, stageSubMode_ == 0 ? th.panelBg : th.textPrimary, 13.0f, true, DWRITE_TEXT_ALIGNMENT_CENTER);
+    // 4 Wide Mic Faders in dB (0.0 dB default & double-click reset) across full width
+    const wchar_t* micNames[4] = {
+        L"CLOSE MIC (DBL-CLICK = 0.0 dB)",
+        L"ROOM MIC (DBL-CLICK = 0.0 dB)",
+        L"HALL MIC (DBL-CLICK = 0.0 dB)",
+        L"SUB MIC (DBL-CLICK = 0.0 dB)"
+    };
+    for (int b = 0; b < 4; ++b) {
+        float y = 442.0f + b * 44.0f;
+        float val = static_cast<float>(controller_->getParamNormalized(kParamBusCloseGain + b));
+        bool byp = controller_->getParamNormalized(kParamBusCloseBypass + b) >= 0.5;
+        wchar_t vMic[32];
+        formatDbLabel(vMic, 32, gainNormToDb(val));
+        drawFader(36, y, 686, 14, val, micNames[b], vMic, th, false, !byp);
 
-    brush_->SetColor(toD2D(stageSubMode_ == 1 ? th.border : th.headerBg));
-    rt_->FillRectangle(D2D1::RectF(726, 424, 808, 612), brush_);
-    brush_->SetColor(toD2D(th.border));
-    rt_->DrawRectangle(D2D1::RectF(726, 424, 808, 612), brush_, 1.5f);
-    drawText(L"MIX", 726, 424, 82, 188, stageSubMode_ == 1 ? th.panelBg : th.textPrimary, 13.0f, true, DWRITE_TEXT_ALIGNMENT_CENTER);
-
-    if (stageSubMode_ == 0) {
-        wchar_t vVol[32], vTune[32], vTL[32], vTH[32], vAt[32], vRl[32];
-        swprintf(vVol,  32, L"%d%%", static_cast<int>(std::round(selSl.gain * 100.0f)));
-        swprintf(vTune, 32, L"%+.1f st", (selSl.pitch - 0.5f) * 48.0f);
-        swprintf(vTL,   32, L"%+.1f dB", (selSl.toneLow - 0.5f) * 24.0f);
-        swprintf(vTH,   32, L"%+.1f dB", (selSl.toneHigh - 0.5f) * 24.0f);
-        swprintf(vAt,   32, L"%.0f ms", selSl.attack * 200.0f);
-        swprintf(vRl,   32, L"%.0f ms", 15.0f + selSl.release * 3985.0f);
-
-        drawFader(132, 448, 276, 15, selSl.gain,     L"VOL (DBL-CLK 80%)", vVol,  th);
-        drawFader(132, 508, 276, 15, selSl.pitch,    L"TUNE (DBL-CLK 0)",  vTune, th);
-        drawFader(132, 568, 276, 15, selSl.toneLow,  L"TONE LOW (DBL 0)",  vTL,   th);
-
-        drawFader(432, 448, 276, 15, selSl.toneHigh, L"TONE HI (DBL 0)",   vTH,   th);
-        drawFader(432, 508, 276, 15, selSl.attack,   L"ATTACK",            vAt,   th);
-        drawFader(432, 568, 276, 15, selSl.release,  L"DECAY / RELEASE",   vRl,   th);
-    } else {
-        const wchar_t* micNames[4] = {
-            L"CLOSE MIC (DIRECT PUNCH)",
-            L"ROOM MIC (EARLY REFLECTIONS)",
-            L"HALL MIC (SCORING SPACE)",
-            L"SUB MIC (LOW IMPACT)"
-        };
-        for (int b = 0; b < 4; ++b) {
-            float y = 446.0f + b * 44.0f;
-            float val = static_cast<float>(controller_->getParamNormalized(kParamBusCloseGain + b));
-            bool byp = controller_->getParamNormalized(kParamBusCloseBypass + b) >= 0.5;
-            wchar_t vMic[32];
-            swprintf(vMic, 32, L"%d%%", static_cast<int>(std::round(val * 125.0f)));
-            drawFader(134, y, 514, 14, val, micNames[b], vMic, th, false, !byp);
-
-            brush_->SetColor(toD2D(byp ? th.headerBg : th.accent));
-            rt_->FillRectangle(D2D1::RectF(660, y - 4, 710, y + 18), brush_);
-            brush_->SetColor(toD2D(th.border));
-            rt_->DrawRectangle(D2D1::RectF(660, y - 4, 710, y + 18), brush_, 1.2f);
-            drawText(byp ? L"OFF" : L"ON", 660, y - 4, 50, 22, byp ? th.textMuted : 0xFFFFFF, 9.5f, true, DWRITE_TEXT_ALIGNMENT_CENTER);
-        }
+        brush_->SetColor(toD2D(byp ? th.headerBg : th.accent));
+        rt_->FillRectangle(D2D1::RectF(736, y - 4, 804, y + 18), brush_);
+        brush_->SetColor(toD2D(th.border));
+        rt_->DrawRectangle(D2D1::RectF(736, y - 4, 804, y + 18), brush_, 1.2f);
+        drawText(byp ? L"OFF" : L"ON", 736, y - 4, 68, 22, byp ? th.textMuted : 0xFFFFFF, 9.5f, true, DWRITE_TEXT_ALIGNMENT_CENTER);
     }
 }
 
@@ -787,7 +781,6 @@ void WreckageWinView::drawMasterFxTab(const ThemePalette& th) {
     wchar_t v1[32], v2[32], v3[32], v4[32], v5[32], v6[32];
 
     if (activeFxModule_ == 0) {
-        // FILTER: Live Filter Frequency Response Curve + Mode Buttons + Cutoff & Resonance
         drawText(L"FILTER MODULE  (LIVE CUTOFF & RESONANCE RESPONSE)", 44, 220, 520, 20, th.textPrimary, 11.0f, true);
         static const wchar_t* fTypes[8] = { L"LP 24dB", L"LP 12dB", L"HP 24dB", L"HP 12dB", L"BP 12dB", L"BP 24dB", L"PEAK", L"NOTCH" };
         int ft = std::clamp(static_cast<int>(std::round(controller_->getParamNormalized(kParamFilterType) * 7.0)), 0, 7);
@@ -803,7 +796,6 @@ void WreckageWinView::drawMasterFxTab(const ThemePalette& th) {
         float cNorm = static_cast<float>(controller_->getParamNormalized(kParamFilterCutoff));
         float rNorm = static_cast<float>(controller_->getParamNormalized(kParamFilterRes));
 
-        // Filter Response Graph (x: 44..792, y: 280..378)
         float cx = 44.0f, cy = 280.0f, cw = 748.0f, ch = 98.0f;
         brush_->SetColor(toD2D(th.panelBg));
         rt_->FillRectangle(D2D1::RectF(cx, cy, cx + cw, cy + ch), brush_);
@@ -824,20 +816,20 @@ void WreckageWinView::drawMasterFxTab(const ThemePalette& th) {
             float diff = u - cNorm;
             float resTerm = resBump * std::exp(-(diff * diff) / 0.0025f);
             float py = midY;
-            if (ft == 0 || ft == 1) { // LP
+            if (ft == 0 || ft == 1) {
                 float slope = (ft == 0) ? 18.0f : 10.0f;
                 float drop = (diff > 0.0f) ? std::min(ch * 0.48f, diff * slope * ch * 0.14f) : 0.0f;
                 py = midY - resTerm + drop;
-            } else if (ft == 2 || ft == 3) { // HP
+            } else if (ft == 2 || ft == 3) {
                 float slope = (ft == 2) ? 18.0f : 10.0f;
                 float drop = (diff < 0.0f) ? std::min(ch * 0.48f, (-diff) * slope * ch * 0.14f) : 0.0f;
                 py = midY - resTerm + drop;
-            } else if (ft == 4 || ft == 5) { // BP
+            } else if (ft == 4 || ft == 5) {
                 float dist = std::fabs(diff);
                 py = (cy + ch - 10.0f) - (ch * 0.50f + resTerm * 0.6f) * std::exp(-(dist * dist) / 0.015f);
-            } else if (ft == 6) { // Peak
+            } else if (ft == 6) {
                 py = midY - (ch * 0.25f + resTerm) * std::exp(-(diff * diff) / 0.006f);
-            } else { // Notch
+            } else {
                 py = midY + (ch * 0.38f) * std::exp(-(diff * diff) / (0.003f + (1.0f - rNorm) * 0.01f));
             }
             py = std::clamp(py, cy + 6.0f, cy + ch - 6.0f);
@@ -855,8 +847,7 @@ void WreckageWinView::drawMasterFxTab(const ThemePalette& th) {
         drawFader(44, 468, 748, 16, rNorm, L"RESONANCE",        v2, th, false, modEnabled);
     }
     else if (activeFxModule_ == 1) {
-        // EQ: Live Rising Spectrum Waves + 3-Band EQ Curve + Double-Click Gain = 0 dB
-        drawText(L"3-BAND PARAMETRIC EQ  (LIVE SPECTRUM + DBL-CLICK GAIN = 0 dB)", 44, 220, 680, 20, th.textPrimary, 11.0f, true);
+        drawText(L"3-BAND PARAMETRIC EQ  (LIVE SPECTRUM + DBL-CLICK GAIN = 0.0 dB)", 44, 220, 680, 20, th.textPrimary, 11.0f, true);
         float cx = 44.0f, cy = 244.0f, cw = 748.0f, ch = 122.0f;
         brush_->SetColor(toD2D(th.panelBg));
         rt_->FillRectangle(D2D1::RectF(cx, cy, cx + cw, cy + ch), brush_);
@@ -874,7 +865,6 @@ void WreckageWinView::drawMasterFxTab(const ThemePalette& th) {
         float ny[3] = { cy + (1.0f - lg) * ch, cy + (1.0f - mg) * ch, cy + (1.0f - hg) * ch };
         float midY = cy + ch * 0.5f;
 
-        // Rising Output Spectrum Bars from bottom of EQ display
         if (outLvl > 0.002f) {
             brush_->SetColor(toD2D(th.accent, 0.22f));
             int nBars = 48;
@@ -941,7 +931,7 @@ void WreckageWinView::drawMasterFxTab(const ThemePalette& th) {
 
         float gr = controller_->liveGrDb();
         wchar_t hdrGr[80];
-        swprintf(hdrGr, 80, L"COMPRESSOR  |  GR: -%.1f dB  |  DBL-CLICK MAKEUP = 0 dB", gr);
+        swprintf(hdrGr, 80, L"COMPRESSOR  |  GR: -%.1f dB  |  DBL-CLICK MAKEUP = 0.0 dB", gr);
         drawText(hdrGr, 44, 220, 748, 20, th.textPrimary, 11.0f, true);
 
         float cx = 44.0f, cy = 242.0f, cw = 748.0f, ch = 84.0f;
@@ -963,7 +953,6 @@ void WreckageWinView::drawMasterFxTab(const ThemePalette& th) {
         rt_->DrawLine(D2D1::Point2F(p0x, p0y), D2D1::Point2F(p1x, p1y), brush_, 2.0f);
         rt_->DrawLine(D2D1::Point2F(p1x, p1y), D2D1::Point2F(cx + cw, p2y), brush_, 2.2f);
 
-        // Live Output Level & Gain Reduction Bars inside Compressor Display
         float grNorm = std::clamp(gr / 18.0f, 0.0f, 1.0f);
         float outNorm = std::clamp(outLvl, 0.0f, 1.0f);
         brush_->SetColor(toD2D(th.faderTrack));
@@ -1003,7 +992,6 @@ void WreckageWinView::drawMasterFxTab(const ThemePalette& th) {
         rt_->DrawRectangle(D2D1::RectF(cx, cy, cx + cw, cy + ch), brush_, 1.2f);
 
         float midY = cy + ch * 0.5f;
-        // Dry reference wave in muted gray
         brush_->SetColor(toD2D(th.textMuted, 0.45f));
         float dx0 = cx + 16.0f, dy0 = midY;
         for (int i = 1; i <= 80; ++i) {
@@ -1014,7 +1002,6 @@ void WreckageWinView::drawMasterFxTab(const ThemePalette& th) {
             dx0 = px; dy0 = py;
         }
 
-        // Saturated output wave in accent
         brush_->SetColor(toD2D(modEnabled ? th.accent : th.textMuted));
         float drvGain = 1.0f + sDr * 4.5f;
         float px0 = cx + 16.0f, py0 = midY;
@@ -1093,7 +1080,6 @@ void WreckageWinView::drawMasterFxTab(const ThemePalette& th) {
         drawFader(44,  468, 748, 13, dMx, L"DELAY MIX",  v5, th, true,  modEnabled);
     }
     else {
-        // REVERB: Room / Plate / Hall Space Visual + Decay Wave + SIZE (not 3D SIZE)
         int rMode = std::clamp(static_cast<int>(std::round(controller_->getParamNormalized(kParamRevMode) * 2.0)), 0, 2);
         float rPd = static_cast<float>(controller_->getParamNormalized(kParamRevPreDelay));
         float rDc = static_cast<float>(controller_->getParamNormalized(kParamRevDecay));
@@ -1125,7 +1111,6 @@ void WreckageWinView::drawMasterFxTab(const ThemePalette& th) {
         brush_->SetColor(toD2D(th.border));
         rt_->DrawRectangle(D2D1::RectF(cx, cy, cx + cw, cy + ch), brush_, 1.2f);
 
-        // Room/Plate/Hall architectural chamber box on left + Decay tail wave on right
         float boxW = 24.0f + rSz * 52.0f;
         float boxH = 22.0f + rSz * 38.0f;
         brush_->SetColor(toD2D(modEnabled ? th.accent : th.textMuted, 0.25f));
@@ -1214,7 +1199,7 @@ void WreckageWinView::drawPunishAndKeyboard(const ThemePalette& th) {
         drawText(pModes[i], bx, 654, 102, 52, 0xFFFFFF, 10.0f, true, DWRITE_TEXT_ALIGNMENT_CENTER);
     }
 
-    // Bottom 3-Octave Keyboard (C3 - B5): Full bright key color when loaded, turns WHITE when pressed!
+    // Bottom 3-Octave Keyboard (C3 - B5): Single unified pressed check (Mouse + MIDI) with clear press shift & highlight
     brush_->SetColor(toD2D(th.headerBg));
     rt_->FillRectangle(D2D1::RectF(0, 724, 840, 840), brush_);
 
@@ -1234,7 +1219,7 @@ void WreckageWinView::drawPunishAndKeyboard(const ThemePalette& th) {
     auto getNoteColor = [&](int note, uint32_t& outCol) -> bool {
         for (int i = 0; i < kTotalSlots; ++i) {
             const auto& sl = controller_->slotMirror(i);
-            if (sl.midiNote == note && sl.itemCount > 0 && sl.hasCustomColor && !sl.purged) {
+            if (sl.midiNote == note && sl.hasAnySample() && sl.hasCustomColor && !sl.purged) {
                 outCol = sl.keyColor;
                 return true;
             }
@@ -1245,22 +1230,25 @@ void WreckageWinView::drawPunishAndKeyboard(const ThemePalette& th) {
     for (int oct = 0; oct < 3; ++oct) {
         for (int k = 0; k < 7; ++k) {
             int note = kBaseMidiNote + (oct + keyboardOctaveOffset_) * 12 + kWhiteOffsets[k];
-            bool pressed = (activePressedNote_ >= 0 && note == activePressedNote_);
+            bool pressed = isNotePhysicallyDown(note);
             float kx = kbX + (oct * 7 + k) * whiteW;
-            float pressShift = pressed ? 3.0f : 0.0f;
+            float pressShift = pressed ? 4.0f : 0.0f;
 
             uint32_t keyCol = 0;
             bool hasCol = getNoteColor(note, keyCol);
 
-            // When pressed, flash crisp WHITE (or soft white-accent if empty); when idle, fill FULL key with bright color!
             uint32_t fillRgb = 0xFFFFFF;
-            if (pressed) fillRgb = hasCol ? 0xFFFFFF : 0xFFE5D4;
+            if (pressed) fillRgb = hasCol ? 0xFFFFFF : 0xFFE2CF;
             else if (hasCol) fillRgb = keyCol;
 
             brush_->SetColor(toD2D(fillRgb));
             rt_->FillRectangle(D2D1::RectF(kx, kbY + pressShift, kx + whiteW, kbY + kbH), brush_);
+            if (pressed) {
+                brush_->SetColor(toD2D(th.accent, 0.35f));
+                rt_->FillRectangle(D2D1::RectF(kx + 1, kbY + pressShift, kx + whiteW - 1, kbY + kbH - 1), brush_);
+            }
             brush_->SetColor(toD2D(pressed ? th.accent : 0x181C22));
-            rt_->DrawRectangle(D2D1::RectF(kx, kbY + pressShift, kx + whiteW, kbY + kbH), brush_, pressed ? 2.2f : 1.1f);
+            rt_->DrawRectangle(D2D1::RectF(kx, kbY + pressShift, kx + whiteW, kbY + kbH), brush_, pressed ? 2.4f : 1.1f);
 
             if (k == 0) {
                 std::wstring cLbl = L"C" + std::to_wstring((note / 12) - 1);
@@ -1274,9 +1262,9 @@ void WreckageWinView::drawPunishAndKeyboard(const ThemePalette& th) {
         for (int k = 0; k < 7; ++k) {
             if (!kHasBlackAfter[k]) continue;
             int note = kBaseMidiNote + (oct + keyboardOctaveOffset_) * 12 + kWhiteOffsets[k] + 1;
-            bool pressed = (activePressedNote_ >= 0 && note == activePressedNote_);
+            bool pressed = isNotePhysicallyDown(note);
             float kx = kbX + (oct * 7 + k + 1) * whiteW - 11.0f;
-            float pressShift = pressed ? 3.0f : 0.0f;
+            float pressShift = pressed ? 4.0f : 0.0f;
 
             uint32_t keyCol = 0;
             bool hasCol = getNoteColor(note, keyCol);
@@ -1287,7 +1275,7 @@ void WreckageWinView::drawPunishAndKeyboard(const ThemePalette& th) {
             brush_->SetColor(toD2D(fillRgb));
             rt_->FillRectangle(D2D1::RectF(kx, kbY + pressShift, kx + 22.0f, kbY + 58.0f), brush_);
             brush_->SetColor(toD2D(pressed ? th.accent : 0x000000));
-            rt_->DrawRectangle(D2D1::RectF(kx, kbY + pressShift, kx + 22.0f, kbY + 58.0f), brush_, pressed ? 2.0f : 1.0f);
+            rt_->DrawRectangle(D2D1::RectF(kx, kbY + pressShift, kx + 22.0f, kbY + 58.0f), brush_, pressed ? 2.2f : 1.0f);
         }
     }
 }
@@ -1487,21 +1475,21 @@ void WreckageWinView::openLoadWavDialog() {
             if (SUCCEEDED(dlg->GetResults(&arr))) {
                 DWORD count = 0;
                 arr->GetCount(&count);
-                int prevCount = controller_->slotMirror(selectedSlot_).itemCount;
+                int prevRRCount = controller_->slotMirror(selectedSlot_).rrCountInLayer(selectedVelLayer_);
                 for (DWORD i = 0; i < count; ++i) {
                     IShellItem* item = nullptr;
                     if (SUCCEEDED(arr->GetItemAt(i, &item))) {
                         PWSTR psz = nullptr;
                         if (SUCCEEDED(item->GetDisplayName(SIGDN_FILESYSPATH, &psz))) {
-                            controller_->uiLoadWavFile(selectedSlot_, psz);
+                            controller_->uiLoadWavFile(selectedSlot_, psz, selectedVelLayer_);
                             CoTaskMemFree(psz);
                         }
                         item->Release();
                     }
                 }
                 if (count > 0) {
-                    selectedWaveItem_ = std::max(0, prevCount);
-                    controller_->uiSelectSlot(selectedSlot_);
+                    selectedRR_ = std::clamp(prevRRCount, 0, kMaxRoundRobins - 1);
+                    controller_->uiSelectSlot(selectedSlot_, selectedVelLayer_);
                 }
                 arr->Release();
             }
@@ -1545,7 +1533,6 @@ void WreckageWinView::rescanRootDirectory() {
     browserItems_.clear();
     if (controller_->rootLibraryDir().empty()) return;
     std::error_code ec;
-    // Prioritize .nm6 presets in Preset Browser
     for (const auto& entry : std::filesystem::directory_iterator(controller_->rootLibraryDir(), ec)) {
         if (entry.is_directory()) browserCategories_.push_back(entry.path().filename().wstring());
         else if (entry.path().extension() == L".nm6")
@@ -1572,25 +1559,20 @@ void WreckageWinView::onMouseDoubleClick(float lx, float ly) {
             return;
         }
         if (lx >= 440 && lx <= 808) {
-            if (ly >= 426 && ly <= 466) controller_->uiSetSlotProp(selectedSlot_, 0, 0, 0.80);
+            // Double-click GAIN -> 0.0 dB (norm = 0.75), PITCH -> 0.0 st (norm = 0.50)
+            if (ly >= 426 && ly <= 466) controller_->uiSetSlotProp(selectedSlot_, 0, 0, 0.75);
             else if (ly >= 474 && ly <= 514) controller_->uiSetSlotProp(selectedSlot_, 1, 0, 0.50);
         }
     } else if (activeTab_ == 1) {
-        if (lx >= 32 && lx <= 808 && ly >= 156 && ly <= 374) {
+        if (lx >= 32 && lx <= 808 && ly >= 156 && ly <= 366) {
             controller_->uiSetStageXY(selectedSlot_, 0.0f, 0.0f);
-        } else if (ly >= 384 && ly <= 418) {
+        } else if (ly >= 378 && ly <= 414) {
             if (lx >= 32 && lx <= 408) controller_->uiSetStageXY(selectedSlot_, 0.0f, controller_->slotMirror(selectedSlot_).stageY);
             else if (lx >= 432 && lx <= 808) controller_->uiSetStageXY(selectedSlot_, controller_->slotMirror(selectedSlot_).stageX, 0.0f);
-        } else if (stageSubMode_ == 0 && ly >= 432 && ly <= 592) {
-            if (lx >= 132 && lx <= 408) {
-                int row = std::clamp(static_cast<int>((ly - 432.0f) / 60.0f), 0, 2);
-                if (row == 0) controller_->uiSetSlotProp(selectedSlot_, 0, 0, 0.80);
-                else if (row == 1) controller_->uiSetSlotProp(selectedSlot_, 1, 0, 0.50);
-                else controller_->uiSetSlotProp(selectedSlot_, 10, 0, 0.50);
-            } else if (lx >= 432 && lx <= 708) {
-                int row = std::clamp(static_cast<int>((ly - 432.0f) / 60.0f), 0, 2);
-                if (row == 0) controller_->uiSetSlotProp(selectedSlot_, 11, 0, 0.50);
-            }
+        } else if (lx >= 36 && lx <= 722 && ly >= 426 && ly <= 612) {
+            // Double-click any of the 4 Mic faders -> reset to 0.0 dB (norm = 0.75)
+            int b = std::clamp(static_cast<int>((ly - 426.0f) / 44.0f), 0, 3);
+            controller_->uiSetParam(kParamBusCloseGain + b, 0.75);
         }
     } else if (activeTab_ == 2) {
         if (activeFxModule_ == 1) {
@@ -1650,8 +1632,8 @@ void WreckageWinView::onMouseDown(float lx, float ly) {
                     controller_->activePresetName() = toUtf8(base.stem().wstring());
                     browserOpen_ = false;
                 } else if (base.extension() == L".wav") {
-                    controller_->uiLoadWavFile(selectedSlot_, base.wstring());
-                    controller_->uiSelectSlot(selectedSlot_);
+                    controller_->uiLoadWavFile(selectedSlot_, base.wstring(), selectedVelLayer_);
+                    controller_->uiSelectSlot(selectedSlot_, selectedVelLayer_);
                     controller_->uiTriggerNote(controller_->slotMirror(selectedSlot_).midiNote, 0.9f, true);
                 }
             }
@@ -1714,13 +1696,12 @@ void WreckageWinView::onMouseDown(float lx, float ly) {
         }
         SetCapture(hwnd_);
         activePressedNote_ = note;
-        // Always sync selectedSlot_ & Wave Editor when clicking a key on the keyboard!
         for (int s = 0; s < kTotalSlots; ++s) {
             if (controller_->slotMirror(s).midiNote == note) {
                 selectedSlot_ = s;
                 activeBank_ = s / 12;
-                selectedWaveItem_ = 0;
-                controller_->uiSelectSlot(selectedSlot_);
+                selectedRR_ = 0;
+                controller_->uiSelectSlot(selectedSlot_, selectedVelLayer_);
                 break;
             }
         }
@@ -1733,34 +1714,40 @@ void WreckageWinView::onMouseDown(float lx, float ly) {
         if (ly >= 150 && ly <= 176 && lx >= 26 && lx <= 400) {
             activeBank_ = std::clamp(static_cast<int>((lx - 26.0f) / 126.0f), 0, 2);
             selectedSlot_ = activeBank_ * 12 + (selectedSlot_ % 12);
-            selectedWaveItem_ = 0;
-            controller_->uiSelectSlot(selectedSlot_);
+            selectedRR_ = 0;
+            controller_->uiSelectSlot(selectedSlot_, selectedVelLayer_);
         } else if (int hitKey = hitTestPianoKeyMapNote(lx, ly); hitKey >= 0) {
             selectedSlot_ = hitKey;
-            selectedWaveItem_ = 0;
-            controller_->uiSelectSlot(selectedSlot_);
+            selectedRR_ = 0;
+            controller_->uiSelectSlot(selectedSlot_, selectedVelLayer_);
             controller_->uiTriggerNote(controller_->slotMirror(selectedSlot_).midiNote, 0.88f, true);
         } else if (ly >= 568 && ly <= 610) {
             if (lx >= 26 && lx <= 116) { openLoadWavDialog(); return; }
             else if (lx >= 122 && lx <= 212) { openExportNm6Dialog(true); return; }
-            else if (lx >= 218 && lx <= 308) { controller_->uiClearSlot(selectedSlot_); selectedWaveItem_ = 0; }
-            else if (lx >= 314 && lx <= 402) { controller_->uiResetKit(); selectedWaveItem_ = 0; }
-        } else if (ly >= 124 && ly <= 148) {
+            else if (lx >= 218 && lx <= 308) { controller_->uiClearSlot(selectedSlot_); selectedRR_ = 0; }
+            else if (lx >= 314 && lx <= 402) { controller_->uiResetKit(); selectedRR_ = 0; }
+        } else if (ly >= 123 && ly <= 145) {
             auto& sl = controller_->slotMirror(selectedSlot_);
-            if (lx >= 534 && lx <= 744) {
-                int k = std::clamp(static_cast<int>((lx - 534.0f) / 30.0f), 0, 6);
-                if (k < sl.itemCount) {
-                    selectedWaveItem_ = k;
-                    controller_->uiRequestWave(selectedSlot_, selectedWaveItem_);
+            if (lx >= 468 && lx <= 568) {
+                int v = std::clamp(static_cast<int>((lx - 468.0f) / 25.0f), 0, kMaxVelLayers - 1);
+                selectedVelLayer_ = v;
+                selectedRR_ = 0;
+                controller_->uiSelectSlot(selectedSlot_, selectedVelLayer_);
+            } else if (lx >= 594 && lx <= 765) {
+                int r = std::clamp(static_cast<int>((lx - 594.0f) / 19.0f), 0, kMaxRoundRobins - 1);
+                if (r < sl.rrCountInLayer(selectedVelLayer_)) {
+                    selectedRR_ = r;
+                    controller_->uiRequestWave(selectedSlot_, selectedVelLayer_, selectedRR_);
                 }
-            } else if (lx >= 756 && lx <= 812 && sl.itemCount > 0) {
-                controller_->uiDeleteWaveItem(selectedSlot_, selectedWaveItem_);
-                selectedWaveItem_ = std::max(0, selectedWaveItem_ - 1);
+            } else if (lx >= 768 && lx <= 812 && sl.rrCountInLayer(selectedVelLayer_) > 0) {
+                controller_->uiDeleteWaveItem(selectedSlot_, selectedVelLayer_, selectedRR_);
+                selectedRR_ = std::max(0, selectedRR_ - 1);
             }
-        } else if (lx >= 440 && lx <= 812 && ly >= 154 && ly <= 310) {
+        } else if (lx >= 440 && lx <= 812 && ly >= 151 && ly <= 310) {
             auto& sl = controller_->slotMirror(selectedSlot_);
-            if (sl.itemCount > 0 && selectedWaveItem_ < static_cast<int>(sl.waveItems.size())) {
-                const auto& wi = sl.waveItems[static_cast<size_t>(selectedWaveItem_)];
+            auto& rrs = sl.velLayers[selectedVelLayer_].rrs;
+            if (selectedRR_ >= 0 && selectedRR_ < static_cast<int>(rrs.size())) {
+                const auto& wi = rrs[static_cast<size_t>(selectedRR_)];
                 float wx = 440.0f, ww = 372.0f;
                 float xStart = wx + wi.startNorm * ww;
                 float xEnd   = wx + wi.endNorm * ww;
@@ -1769,8 +1756,8 @@ void WreckageWinView::onMouseDown(float lx, float ly) {
                 float xFO    = xEnd - wi.fadeOutNorm * regW;
 
                 SetCapture(hwnd_);
-                if (ly <= 176.0f && std::fabs(lx - xFI) <= 12.0f) dragTarget_ = 52;
-                else if (ly <= 176.0f && std::fabs(lx - xFO) <= 12.0f) dragTarget_ = 53;
+                if (ly <= 175.0f && std::fabs(lx - xFI) <= 12.0f) dragTarget_ = 52;
+                else if (ly <= 175.0f && std::fabs(lx - xFO) <= 12.0f) dragTarget_ = 53;
                 else if (std::fabs(lx - xStart) <= std::fabs(lx - xEnd)) dragTarget_ = 50;
                 else dragTarget_ = 51;
                 onMouseMove(lx, ly);
@@ -1804,9 +1791,9 @@ void WreckageWinView::onMouseDown(float lx, float ly) {
             if (lx >= 440 && lx <= 566) stageGridSnap_ = !stageGridSnap_;
             else if (lx >= 574 && lx <= 706) followMidi_ = !followMidi_;
             else if (lx >= 714 && lx <= 810) controller_->uiResetStage();
-        } else if (lx >= 32 && lx <= 808 && ly >= 156 && ly <= 374) {
+        } else if (lx >= 32 && lx <= 808 && ly >= 156 && ly <= 366) {
             auto screenToStage = [&](float px, float py, float& sx, float& sy) {
-                float ny = std::clamp((360.0f - py) / 188.0f, 0.0f, 1.0f);
+                float ny = std::clamp((352.0f - py) / 180.0f, 0.0f, 1.0f);
                 float halfW = 360.0f - ny * 130.0f;
                 float nx = std::clamp((px - 420.0f) / halfW, -1.0f, 1.0f);
                 if (stageGridSnap_) { nx = std::round(nx * 4.0f) / 4.0f; ny = std::round(ny * 4.0f) / 4.0f; }
@@ -1815,7 +1802,7 @@ void WreckageWinView::onMouseDown(float lx, float ly) {
             auto stageToScreen = [](float sx, float sy, float& outX, float& outY) {
                 float halfW = 360.0f - sy * 130.0f;
                 outX = 420.0f + sx * halfW;
-                outY = 360.0f - sy * 188.0f;
+                outY = 352.0f - sy * 180.0f;
             };
 
             int hitSlot = -1;
@@ -1823,7 +1810,7 @@ void WreckageWinView::onMouseDown(float lx, float ly) {
             for (int i = 0; i < 12; ++i) {
                 int sIdx = activeBank_ * 12 + i;
                 const auto& sl = controller_->slotMirror(sIdx);
-                if (sl.itemCount <= 0) continue;
+                if (!sl.hasAnySample()) continue;
                 float px, py;
                 stageToScreen(sl.stageX, sl.stageY, px, py);
                 float d2 = (px - lx) * (px - lx) + (py - ly) * (py - ly);
@@ -1831,17 +1818,17 @@ void WreckageWinView::onMouseDown(float lx, float ly) {
             }
             if (hitSlot >= 0) {
                 selectedSlot_ = hitSlot;
-                controller_->uiSelectSlot(selectedSlot_);
+                controller_->uiSelectSlot(selectedSlot_, selectedVelLayer_);
                 controller_->uiTriggerNote(controller_->slotMirror(selectedSlot_).midiNote, 0.85f, true);
                 SetCapture(hwnd_); dragTarget_ = 1;
                 float nx, ny; screenToStage(lx, ly, nx, ny);
                 controller_->uiSetStageXY(selectedSlot_, nx, ny);
-            } else if (controller_->slotMirror(selectedSlot_).itemCount > 0) {
+            } else if (controller_->slotMirror(selectedSlot_).hasAnySample()) {
                 SetCapture(hwnd_); dragTarget_ = 1;
                 float nx, ny; screenToStage(lx, ly, nx, ny);
                 controller_->uiSetStageXY(selectedSlot_, nx, ny);
             }
-        } else if (ly >= 384 && ly <= 418) {
+        } else if (ly >= 378 && ly <= 414) {
             if (lx >= 32 && lx <= 408) {
                 SetCapture(hwnd_); dragTarget_ = 60;
                 float nx = std::clamp((lx - 32.0f) / 376.0f, 0.0f, 1.0f) * 2.0f - 1.0f;
@@ -1851,34 +1838,16 @@ void WreckageWinView::onMouseDown(float lx, float ly) {
                 float ny = std::clamp((lx - 432.0f) / 376.0f, 0.0f, 1.0f);
                 controller_->uiSetStageXY(selectedSlot_, controller_->slotMirror(selectedSlot_).stageX, ny);
             }
-        } else if (ly >= 424 && ly <= 612) {
-            if (lx >= 32 && lx <= 114) stageSubMode_ = 0;
-            else if (lx >= 726 && lx <= 808) stageSubMode_ = 1;
-            else if (stageSubMode_ == 0) {
-                if (lx >= 132 && lx <= 408 && ly >= 432 && ly <= 596) {
-                    SetCapture(hwnd_);
-                    int row = std::clamp(static_cast<int>((ly - 432.0f) / 60.0f), 0, 2);
-                    static const int props[3] = { 0, 1, 10 };
-                    dragTarget_ = 40 + row;
-                    controller_->uiSetSlotProp(selectedSlot_, props[row], 0, std::clamp((lx - 132.0f) / 276.0f, 0.0f, 1.0f));
-                } else if (lx >= 432 && lx <= 708 && ly >= 432 && ly <= 596) {
-                    SetCapture(hwnd_);
-                    int row = std::clamp(static_cast<int>((ly - 432.0f) / 60.0f), 0, 2);
-                    static const int props[3] = { 11, 2, 3 };
-                    dragTarget_ = 43 + row;
-                    controller_->uiSetSlotProp(selectedSlot_, props[row], 0, std::clamp((lx - 432.0f) / 276.0f, 0.0f, 1.0f));
-                }
-            } else {
-                if (lx >= 134 && lx <= 648 && ly >= 432 && ly <= 608) {
-                    SetCapture(hwnd_);
-                    int b = std::clamp(static_cast<int>((ly - 432.0f) / 44.0f), 0, 3);
-                    dragTarget_ = 10 + b;
-                    controller_->uiSetParam(kParamBusCloseGain + b, std::clamp((lx - 134.0f) / 514.0f, 0.0f, 1.0f));
-                } else if (lx >= 660 && lx <= 710 && ly >= 432 && ly <= 608) {
-                    int b = std::clamp(static_cast<int>((ly - 432.0f) / 44.0f), 0, 3);
-                    bool byp = controller_->getParamNormalized(kParamBusCloseBypass + b) >= 0.5;
-                    controller_->uiSetParam(kParamBusCloseBypass + b, byp ? 0.0 : 1.0);
-                }
+        } else if (ly >= 426 && ly <= 612) {
+            if (lx >= 36 && lx <= 722) {
+                SetCapture(hwnd_);
+                int b = std::clamp(static_cast<int>((ly - 426.0f) / 44.0f), 0, 3);
+                dragTarget_ = 10 + b;
+                controller_->uiSetParam(kParamBusCloseGain + b, std::clamp((lx - 36.0f) / 686.0f, 0.0f, 1.0f));
+            } else if (lx >= 736 && lx <= 804) {
+                int b = std::clamp(static_cast<int>((ly - 426.0f) / 44.0f), 0, 3);
+                bool byp = controller_->getParamNormalized(kParamBusCloseBypass + b) >= 0.5;
+                controller_->uiSetParam(kParamBusCloseBypass + b, byp ? 0.0 : 1.0);
             }
         }
     } else if (activeTab_ == 2) {
@@ -1983,7 +1952,7 @@ void WreckageWinView::onMouseMove(float lx, float ly) {
     if (dragTarget_ == 0) return;
 
     if (dragTarget_ == 1) {
-        float ny = std::clamp((360.0f - ly) / 188.0f, 0.0f, 1.0f);
+        float ny = std::clamp((352.0f - ly) / 180.0f, 0.0f, 1.0f);
         float halfW = 360.0f - ny * 130.0f;
         float nx = std::clamp((lx - 420.0f) / halfW, -1.0f, 1.0f);
         if (stageGridSnap_) { nx = std::round(nx * 4.0f) / 4.0f; ny = std::round(ny * 4.0f) / 4.0f; }
@@ -1991,19 +1960,14 @@ void WreckageWinView::onMouseMove(float lx, float ly) {
     } else if (dragTarget_ == 2) {
         controller_->uiSetParam(kParamPunishAmount, std::clamp((lx - 138.0f) / 350.0f, 0.0f, 1.0f));
     } else if (dragTarget_ >= 10 && dragTarget_ <= 13) {
-        controller_->uiSetParam(kParamBusCloseGain + (dragTarget_ - 10), std::clamp((lx - 134.0f) / 514.0f, 0.0f, 1.0f));
+        controller_->uiSetParam(kParamBusCloseGain + (dragTarget_ - 10), std::clamp((lx - 36.0f) / 686.0f, 0.0f, 1.0f));
     } else if (dragTarget_ >= 20 && dragTarget_ <= 23) {
         controller_->uiSetSlotProp(selectedSlot_, dragTarget_ - 20, 0, std::clamp((lx - 440.0f) / 368.0f, 0.0f, 1.0f));
-    } else if (dragTarget_ >= 40 && dragTarget_ <= 42) {
-        static const int props[3] = { 0, 1, 10 };
-        controller_->uiSetSlotProp(selectedSlot_, props[dragTarget_ - 40], 0, std::clamp((lx - 132.0f) / 276.0f, 0.0f, 1.0f));
-    } else if (dragTarget_ >= 43 && dragTarget_ <= 45) {
-        static const int props[3] = { 11, 2, 3 };
-        controller_->uiSetSlotProp(selectedSlot_, props[dragTarget_ - 43], 0, std::clamp((lx - 432.0f) / 276.0f, 0.0f, 1.0f));
     } else if (dragTarget_ >= 50 && dragTarget_ <= 53) {
         auto& sl = controller_->slotMirror(selectedSlot_);
-        if (sl.itemCount > 0 && selectedWaveItem_ < static_cast<int>(sl.waveItems.size())) {
-            auto& wi = sl.waveItems[static_cast<size_t>(selectedWaveItem_)];
+        auto& rrs = sl.velLayers[selectedVelLayer_].rrs;
+        if (selectedRR_ >= 0 && selectedRR_ < static_cast<int>(rrs.size())) {
+            auto& wi = rrs[static_cast<size_t>(selectedRR_)];
             float wx = 440.0f, ww = 372.0f;
             if (dragTarget_ == 50) {
                 wi.startNorm = std::clamp((lx - wx) / ww, 0.0f, wi.endNorm - 0.02f);
@@ -2018,7 +1982,7 @@ void WreckageWinView::onMouseMove(float lx, float ly) {
                 float posN = std::clamp((lx - wx) / ww, wi.startNorm, wi.endNorm);
                 wi.fadeOutNorm = std::clamp((wi.endNorm - posN) / regW, 0.0f, 0.5f);
             }
-            controller_->uiUpdateWaveEdit(selectedSlot_, selectedWaveItem_);
+            controller_->uiUpdateWaveEdit(selectedSlot_, selectedVelLayer_, selectedRR_);
         }
     } else if (dragTarget_ == 60) {
         float nx = std::clamp((lx - 32.0f) / 376.0f, 0.0f, 1.0f) * 2.0f - 1.0f;
@@ -2129,38 +2093,6 @@ LRESULT WreckageWinView::handleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARA
             if (renameEdit_ && wParam == VK_ESCAPE) { cancelInlineRename(); return 0; }
             if (HWND p = GetParent(hwnd)) PostMessageW(p, msg, wParam, lParam);
             return 0;
-        case WM_DROPFILES: {
-            HDROP hDrop = reinterpret_cast<HDROP>(wParam);
-            POINT pt{};
-            int targetSlot = selectedSlot_;
-            if (DragQueryPoint(hDrop, &pt)) {
-                float lx = pt.x / uiScale_, ly = pt.y / uiScale_;
-                if (activeTab_ == 0) {
-                    int hitK = hitTestPianoKeyMapNote(lx, ly);
-                    if (hitK >= 0) {
-                        targetSlot = hitK;
-                        selectedSlot_ = targetSlot;
-                    }
-                }
-            }
-            int prevCount = controller_->slotMirror(targetSlot).itemCount;
-            UINT n = DragQueryFileW(hDrop, 0xFFFFFFFF, nullptr, 0);
-            int added = 0;
-            for (UINT i = 0; i < n; ++i) {
-                wchar_t buf[MAX_PATH] = {0};
-                if (DragQueryFileW(hDrop, i, buf, MAX_PATH) > 0) {
-                    controller_->uiLoadWavFile(targetSlot, buf);
-                    ++added;
-                }
-            }
-            if (added > 0) {
-                selectedWaveItem_ = std::max(0, prevCount);
-                controller_->uiSelectSlot(targetSlot);
-            }
-            DragFinish(hDrop);
-            InvalidateRect(hwnd_, nullptr, FALSE);
-            return 0;
-        }
         default: break;
     }
     return DefWindowProcW(hwnd, msg, wParam, lParam);

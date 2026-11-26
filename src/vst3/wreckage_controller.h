@@ -17,17 +17,19 @@ struct UiWaveItem {
     float fadeOutNorm = 0.0f;
 };
 
+struct UiVelLayerMirror {
+    std::vector<UiWaveItem> rrs; // Max kMaxRoundRobins (9)
+};
+
 struct UiSlotMirror {
     std::string name = "EMPTY";
     int midiNote = kBaseMidiNote;
     uint32_t keyColor = 0;
     bool hasCustomColor = false;
-    float gain = 0.80f;
+    float gainNorm = 0.75f; // 0.75f = 0.0 dB center
     float pitch = 0.5f;
-    float toneLow = 0.5f;
-    float toneHigh = 0.5f;
     float attack = 0.0f;
-    float release = 0.295f; // ~1200 ms default
+    float release = 0.296f;
     float stageX = 0.0f;
     float stageY = 0.0f;
     bool fakeRR = true;
@@ -36,8 +38,16 @@ struct UiSlotMirror {
     int chokeGroup = 0;
     bool reverse = false;
     bool purged = false;
-    int itemCount = 0;
-    std::vector<UiWaveItem> waveItems;
+    int activeVelLayers = 1;
+    std::array<int, kMaxVelLayers> rrCounts{{0, 0, 0, 0}};
+    std::array<UiVelLayerMirror, kMaxVelLayers> velLayers;
+
+    bool hasAnySample() const {
+        for (int v = 0; v < kMaxVelLayers; ++v) {
+            if (rrCounts[v] > 0) return true;
+        }
+        return false;
+    }
 };
 
 class WreckageController : public Steinberg::Vst::EditControllerEx1 {
@@ -57,19 +67,19 @@ public:
 
     void uiSetParam(Steinberg::Vst::ParamID id, double normVal, bool beginEnd = true);
     void uiTriggerNote(int midiNote, float vel, bool isOn);
-    void uiSelectSlot(int slotIdx);
+    void uiSelectSlot(int slotIdx, int velLayerIdx);
     void uiPanic();
     void uiResetKit();
     void uiClearSlot(int slotIdx);
-    void uiDeleteWaveItem(int slotIdx, int itemIdx);
+    void uiDeleteWaveItem(int slotIdx, int velLayerIdx, int rrIdx);
     void uiResetStage();
     void uiSetStageXY(int slotIdx, float x, float y);
     void uiSetKeyColor(int slotIdx, uint32_t rgb);
     void uiRenameSlot(int slotIdx, const std::string& newName);
     void uiSetSlotProp(int slotIdx, int prop, int ival, double fval);
-    void uiUpdateWaveEdit(int slotIdx, int itemIdx);
-    void uiRequestWave(int slotIdx, int itemIdx);
-    void uiLoadWavFile(int slotIdx, const std::wstring& widePath);
+    void uiUpdateWaveEdit(int slotIdx, int velLayerIdx, int rrIdx);
+    void uiRequestWave(int slotIdx, int velLayerIdx, int rrIdx);
+    void uiLoadWavFile(int slotIdx, const std::wstring& widePath, int prefVelLayer = -1);
     void uiExportNm6File(const std::wstring& widePath);
     void uiLoadNm6File(const std::wstring& widePath);
 
@@ -84,6 +94,9 @@ public:
     float liveGrDb() const { return liveGrDb_; }
     float liveOutLevel() const { return liveOutLevel_; }
     float livePlayheadNorm() const { return livePlayheadNorm_; }
+    int liveActiveVelLayer() const { return liveActiveVelLayer_; }
+    int liveActiveRR() const { return liveActiveRR_; }
+
     bool isMidiNoteLive(int note) const {
         if (note < 0 || note >= 128) return false;
         uint64_t mask = (note < 64) ? notesLo_ : notesHi_;
@@ -103,6 +116,8 @@ private:
     float liveGrDb_ = 0.0f;
     float liveOutLevel_ = 0.0f;
     float livePlayheadNorm_ = -1.0f;
+    int liveActiveVelLayer_ = -1;
+    int liveActiveRR_ = -1;
     uint64_t notesLo_ = 0;
     uint64_t notesHi_ = 0;
     int saveFlashTicks_ = 0;
