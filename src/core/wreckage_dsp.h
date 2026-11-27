@@ -30,6 +30,10 @@ inline float fastPow10(float p) {
     return fastExp(p * 2.302585092994046f);
 }
 
+inline float flushDenormal(float x) {
+    return (std::fabs(x) < 1e-20f) ? 0.0f : x;
+}
+
 inline float fastTanh(float x) {
     if (x < -3.0f) return -1.0f;
     if (x >  3.0f) return  1.0f;
@@ -43,7 +47,7 @@ struct DCBlocker {
     void setSampleRate(float sr) { r = fastExp(-2.0f * kPi * 20.0f / std::max(8000.0f, sr)); }
     void reset() { x1 = y1 = 0.0f; }
     inline float process(float x) {
-        float y = x - x1 + r * y1;
+        float y = flushDenormal(x - x1 + r * y1);
         x1 = x; y1 = y;
         return y;
     }
@@ -123,8 +127,8 @@ struct Biquad {
 
     inline float process(float x) {
         float y = b0 * x + z1;
-        z1 = b1 * x - a1 * y + z2;
-        z2 = b2 * x - a2 * y;
+        z1 = flushDenormal(b1 * x - a1 * y + z2);
+        z2 = flushDenormal(b2 * x - a2 * y);
         return y;
     }
 };
@@ -146,10 +150,10 @@ struct AllPassDiffuser {
     }
     inline float process(float x) {
         float d = buf[idx];
-        float v = x + d * g;
+        float v = flushDenormal(x + d * g);
         buf[idx] = v;
         if (++idx >= static_cast<int>(buf.size())) idx = 0;
-        return d - v * g;
+        return flushDenormal(d - v * g);
     }
 };
 
@@ -231,11 +235,11 @@ public:
             dfR = diffR_[i].process(dfR);
         }
 
-        // Gentle chorus-like LFO modulation (~0.65 Hz) for rich lush hall tails
+        // Strictly positive chorus-like LFO modulation (+1.0 .. +12.0 samples) eliminates wrap clicks
         lfoPhase_ += (2.0f * kPi * 0.65f) / sr_;
         if (lfoPhase_ > 2.0f * kPi) lfoPhase_ -= 2.0f * kPi;
-        float modA = std::sin(lfoPhase_) * 5.5f;
-        float modB = std::cos(lfoPhase_) * 5.5f;
+        float modA = 6.5f + std::sin(lfoPhase_) * 5.5f;
+        float modB = 6.5f + std::cos(lfoPhase_) * 5.5f;
 
         float d[8];
         for (int i = 0; i < 8; ++i) {
@@ -253,7 +257,7 @@ public:
             } else {
                 s = lines_[i][idx_[i]];
             }
-            dampState_[i] = s * (1.0f - dampCoeff_) + dampState_[i] * dampCoeff_;
+            dampState_[i] = flushDenormal(s * (1.0f - dampCoeff_) + dampState_[i] * dampCoeff_);
             d[i] = dampState_[i] * fb_[i];
         }
 
@@ -372,8 +376,8 @@ public:
             nextR = inR + fb * (dR * (1.0f - cross) + dL * cross);
         }
 
-        bufL_[writeIdx_] = nextL;
-        bufR_[writeIdx_] = nextR;
+        bufL_[writeIdx_] = flushDenormal(nextL);
+        bufR_[writeIdx_] = flushDenormal(nextR);
         if (++writeIdx_ >= maxSamples_) writeIdx_ = 0;
 
         float dryScale = 1.0f - mix01 * 0.30f;

@@ -105,6 +105,12 @@ public:
                 if (!std::isfinite(f)) return 0.0f;
                 return std::clamp(f, -4.0f, 4.0f);
             }
+            if (audioFormat == 3 && bitsPerSample == 64) {
+                double d = 0.0;
+                std::memcpy(&d, p, 8);
+                if (!std::isfinite(d)) return 0.0f;
+                return static_cast<float>(std::clamp(d, -4.0, 4.0));
+            }
             if (audioFormat == 6 && bitsPerSample == 8) {
                 uint8_t a = p[0] ^ 0x55;
                 int t = (a & 0x0F) << 4;

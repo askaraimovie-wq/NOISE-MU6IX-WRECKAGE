@@ -9,6 +9,8 @@
 #include <array>
 #include <atomic>
 #include <cmath>
+#include <cstdlib>
+#include <cstring>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -18,6 +20,7 @@ namespace NoiseMu6ix {
 
 struct MultiMicSample {
     std::array<std::shared_ptr<AudioBuffer>, 4> mics;
+    std::array<std::string, 4> sourcePathsUtf8;
     float startNorm   = 0.0f;
     float endNorm     = 1.0f;
     float fadeInNorm  = 0.0f;
@@ -111,9 +114,14 @@ struct Voice {
     int chokeGroup = 0;
     bool reverse = false;
     bool oneShot = true;
+    bool unitPitch = true;
 
     MultiMicSample sample;
     std::shared_ptr<AudioBuffer> primaryBuf;
+    const float* primL = nullptr;
+    const float* primR = nullptr;
+    size_t primLen = 0;
+
     double playPos = 0.0;
     double startFrame = 0.0;
     double endFrame = 0.0;
@@ -123,12 +131,13 @@ struct Voice {
 
     float velGain = 1.0f;
     float slotGain = 1.0f;
+    float baseGain = 1.0f; // velGain * slotGain
     float panL = 0.707f, panR = 0.707f;
     float stageDepth = 0.0f;
 
     float envVal = 0.0f;
     float attackInc = 1.0f;
-    float releaseDec = 0.001f;
+    float releaseMul = 0.999f; // Exponential percussion decay multiplier
     double releaseStartFrame = 0.0;
     double elapsedHostSamples = 0.0;
     float chokeFade = 1.0f;
@@ -140,6 +149,7 @@ struct Voice {
     Biquad toneLowL, toneLowR, toneHiL, toneHiR;
     bool useFormant = false;
     bool useVelLpf = false;
+    bool useStageLpf = false;
     bool useToneEq = false;
     float velDrive = 0.0f;
 
@@ -185,29 +195,39 @@ public:
             slots_[i].stageX = 0.0f;
             slots_[i].stageY = 0.0f;
         }
+        ensureScratch(2048);
+    }
+
+    void resetSlotDefaultsLocked(SlotConfig& s) {
+        for (int vl = 0; vl < kMaxVelLayers; ++vl) {
+            s.velLayers[vl].rrs.clear();
+            s.velLayers[vl].lastRRIdx = -1;
+        }
+        s.name = "EMPTY";
+        s.hasCustomColor = false;
+        s.keyColor = 0;
+        s.stageX = 0.0f;
+        s.stageY = 0.0f;
+        s.gain = 1.0f;
+        s.pitchSemitones = 0.0f;
+        s.toneLowDb = 0.0f;
+        s.toneHighDb = 0.0f;
+        s.attackMs = 0.0f;
+        s.releaseMs = 4000.0f;
+        s.fakeRR = false;
+        s.fakeVel = false;
+        s.oneShot = true;
+        s.chokeGroup = 0;
+        s.reverse = false;
+        s.purged = false;
+        s.fakeRRStep = 0;
     }
 
     void resetKit() {
         std::lock_guard<std::mutex> lock(stateMutex_);
         for (auto& v : voices_) v.active = false;
         for (int i = 0; i < kTotalSlots; ++i) {
-            for (int vl = 0; vl < kMaxVelLayers; ++vl) {
-                slots_[i].velLayers[vl].rrs.clear();
-                slots_[i].velLayers[vl].lastRRIdx = -1;
-            }
-            slots_[i].name = "EMPTY";
-            slots_[i].hasCustomColor = false;
-            slots_[i].stageX = 0.0f;
-            slots_[i].stageY = 0.0f;
-            slots_[i].gain = 1.0f;
-            slots_[i].pitchSemitones = 0.0f;
-            slots_[i].toneLowDb = 0.0f;
-            slots_[i].toneHighDb = 0.0f;
-            slots_[i].attackMs = 0.0f;
-            slots_[i].releaseMs = 4000.0f;
-            slots_[i].fakeRR = false;
-            slots_[i].fakeVel = false;
-            slots_[i].purged = false;
+            resetSlotDefaultsLocked(slots_[i]);
         }
         activeVoices_.store(0, std::memory_order_relaxed);
         recalcRamBytesLocked();
@@ -215,16 +235,10 @@ public:
 
     void clearSlot(int idx) {
         std::lock_guard<std::mutex> lock(stateMutex_);
-        auto& s = slot(idx);
-        for (int vl = 0; vl < kMaxVelLayers; ++vl) {
-            s.velLayers[vl].rrs.clear();
-            s.velLayers[vl].lastRRIdx = -1;
+        for (auto& v : voices_) {
+            if (v.active && v.slotIndex == idx) v.active = false;
         }
-        s.name = "EMPTY";
-        s.hasCustomColor = false;
-        s.stageX = 0.0f;
-        s.stageY = 0.0f;
-        s.purged = false;
+        resetSlotDefaultsLocked(slot(idx));
         recalcRamBytesLocked();
     }
 
@@ -263,7 +277,10 @@ public:
         hallBus_.prepare(sr_, 24.0f, 3.20f, 120.0f, 8500.0f);
         subBus_.prepare(sr_);
         masterFx_.prepare(sr_);
+        wasRoomRun_ = false;
+        wasHallRun_ = false;
         for (auto& v : voices_) v.active = false;
+        ensureScratch(4096);
     }
 
     EngineParams& params() { return params_; }
@@ -295,7 +312,7 @@ public:
                 latestAge = v.age;
                 outActiveVelLayer = v.velLayerIndex;
                 outActiveRR = v.rrIndex;
-                double totalF = static_cast<double>(v.primaryBuf->numFrames());
+                double totalF = static_cast<double>(v.primLen);
                 if (totalF > 1.0) {
                     outPlayheadNorm = std::clamp(static_cast<float>(v.playPos / totalF), 0.0f, 1.0f);
                 }
@@ -329,12 +346,38 @@ public:
         idleSleeping_.store(true, std::memory_order_relaxed);
     }
 
+    // Reload a specific WAV into an exact (slot, velLayer, rr, mic) for FL Studio project recall
+    bool reloadWavIntoExactLocation(int slotIdx, int vl, int rr, int mic,
+                                    const std::filesystem::path& filePath, const std::string& pathUtf8,
+                                    float startNorm, float endNorm, float fadeInNorm, float fadeOutNorm) {
+        if (slotIdx < 0 || slotIdx >= kTotalSlots || vl < 0 || vl >= kMaxVelLayers ||
+            rr < 0 || rr >= kMaxRoundRobins || mic < 0 || mic >= 4) return false;
+        auto buf = std::make_shared<AudioBuffer>();
+        if (!WavLoader::loadFromFile(filePath, *buf)) return false;
+
+        std::lock_guard<std::mutex> lock(stateMutex_);
+        auto& s = slots_[slotIdx];
+        auto& rrs = s.velLayers[vl].rrs;
+        if (static_cast<int>(rrs.size()) <= rr) rrs.resize(static_cast<size_t>(rr + 1));
+        auto& it = rrs[static_cast<size_t>(rr)];
+        it.mics[static_cast<size_t>(mic)] = buf;
+        it.sourcePathsUtf8[static_cast<size_t>(mic)] = pathUtf8;
+        it.startNorm   = std::clamp(startNorm, 0.0f, 0.98f);
+        it.endNorm     = std::clamp(endNorm, it.startNorm + 0.02f, 1.0f);
+        it.fadeInNorm  = std::clamp(fadeInNorm, 0.0f, 0.5f);
+        it.fadeOutNorm = std::clamp(fadeOutNorm, 0.0f, 0.5f);
+        recalcRamBytesLocked();
+        return true;
+    }
+
     // Loads sample respecting Max 4 Velocity Layers and Max 9 Round-Robins per layer
-    bool loadSampleIntoSlot(int slotIdx, const std::filesystem::path& filePath, int preferredVelLayer = -1, int* outVelLayer = nullptr, int* outRR = nullptr) {
+    bool loadSampleIntoSlot(int slotIdx, const std::filesystem::path& filePath, int preferredVelLayer = -1,
+                            int* outVelLayer = nullptr, int* outRR = nullptr, const std::string& pathUtf8 = "") {
         auto buf = std::make_shared<AudioBuffer>();
         if (!WavLoader::loadFromFile(filePath, *buf)) return false;
 
         std::string fname = filePath.filename().u8string();
+        std::string fullU8 = pathUtf8.empty() ? filePath.u8string() : pathUtf8;
         auto meta = SampleAutoParser::parseFilename(fname);
 
         std::lock_guard<std::mutex> lock(stateMutex_);
@@ -368,6 +411,7 @@ public:
             targetIdx = static_cast<int>(rrs.size()) - 1;
         }
         rrs[static_cast<size_t>(targetIdx)].mics[static_cast<size_t>(meta.mic)] = buf;
+        rrs[static_cast<size_t>(targetIdx)].sourcePathsUtf8[static_cast<size_t>(meta.mic)] = fullU8;
 
         if (s.name == "EMPTY") s.name = meta.cleanInstrumentName;
         if (!s.hasCustomColor) {
@@ -393,13 +437,16 @@ public:
         if (midiNote >= 0 && midiNote < 128)
             notePlaying_[midiNote].fetch_add(1, std::memory_order_relaxed);
 
+        // Batch age prevents same-note slots in same choke group from choking each other
+        uint64_t batchAge = voiceCounter_;
+
         for (int sIdx = 0; sIdx < kTotalSlots; ++sIdx) {
             auto& s = slots_[sIdx];
             if (s.midiNote != midiNote || s.purged || !s.hasAnySample()) continue;
 
             if (s.chokeGroup > 0) {
                 for (auto& v : voices_) {
-                    if (v.active && v.chokeGroup == s.chokeGroup) {
+                    if (v.active && v.age <= batchAge && v.chokeGroup == s.chokeGroup) {
                         v.choking = true;
                         v.chokeDec = 1.0f / std::max(1.0f, sr_ * 0.005f);
                     }
@@ -431,11 +478,68 @@ public:
         return out.empty() ? "SLOT" : out;
     }
 
+    // Format 5: Saves 36 slots + full 4-Bus Mixer + Global Fake Mic + 6 Master FX + PUNISH
     bool exportKitToNm6(const std::filesystem::path& targetPath, const std::string& libName) {
         std::lock_guard<std::mutex> lock(stateMutex_);
         Nm6Pack pack;
         pack.libraryName = sanitizeJsonStr(libName);
-        std::string json = "{\"format\":4,\"slots\":[";
+
+        const auto& p = params_;
+        const auto& fx = p.fx;
+        std::string json = "{\"format\":5,\"mix\":{";
+        json += "\"bg0\":" + std::to_string(p.busGain[0]) +
+                ",\"bg1\":" + std::to_string(p.busGain[1]) +
+                ",\"bg2\":" + std::to_string(p.busGain[2]) +
+                ",\"bg3\":" + std::to_string(p.busGain[3]) +
+                ",\"bb0\":" + std::to_string(p.busBypass[0] ? 1 : 0) +
+                ",\"bb1\":" + std::to_string(p.busBypass[1] ? 1 : 0) +
+                ",\"bb2\":" + std::to_string(p.busBypass[2] ? 1 : 0) +
+                ",\"bb3\":" + std::to_string(p.busBypass[3] ? 1 : 0) +
+                ",\"gfm\":" + std::to_string(p.globalFakeMic ? 1 : 0) +
+                ",\"fon\":" + std::to_string(fx.filterOn ? 1 : 0) +
+                ",\"ftp\":" + std::to_string(fx.filterType) +
+                ",\"fco\":" + std::to_string(fx.filterCutoffHz) +
+                ",\"frs\":" + std::to_string(fx.filterRes) +
+                ",\"eon\":" + std::to_string(fx.eqOn ? 1 : 0) +
+                ",\"elf\":" + std::to_string(fx.eqLowFreq) +
+                ",\"elg\":" + std::to_string(fx.eqLowGain) +
+                ",\"emf\":" + std::to_string(fx.eqMidFreq) +
+                ",\"emg\":" + std::to_string(fx.eqMidGain) +
+                ",\"ehf\":" + std::to_string(fx.eqHighFreq) +
+                ",\"ehg\":" + std::to_string(fx.eqHighGain) +
+                ",\"con\":" + std::to_string(fx.compOn ? 1 : 0) +
+                ",\"cth\":" + std::to_string(fx.compThreshDb) +
+                ",\"crt\":" + std::to_string(fx.compRatio) +
+                ",\"cat\":" + std::to_string(fx.compAttackMs) +
+                ",\"crl\":" + std::to_string(fx.compReleaseMs) +
+                ",\"ckn\":" + std::to_string(fx.compKneeDb) +
+                ",\"cmk\":" + std::to_string(fx.compMakeupDb) +
+                ",\"son\":" + std::to_string(fx.satOn ? 1 : 0) +
+                ",\"smd\":" + std::to_string(fx.satMode) +
+                ",\"sdr\":" + std::to_string(fx.satDrive) +
+                ",\"swm\":" + std::to_string(fx.satWarmth) +
+                ",\"smx\":" + std::to_string(fx.satMix) +
+                ",\"don\":" + std::to_string(fx.delayOn ? 1 : 0) +
+                ",\"dmd\":" + std::to_string(fx.delayMode) +
+                ",\"dtm\":" + std::to_string(fx.delayTimeMs) +
+                ",\"dfb\":" + std::to_string(fx.delayFeedback) +
+                ",\"dtn\":" + std::to_string(fx.delayTone) +
+                ",\"dwd\":" + std::to_string(fx.delayWidth) +
+                ",\"dmx\":" + std::to_string(fx.delayMix) +
+                ",\"ron\":" + std::to_string(fx.revOn ? 1 : 0) +
+                ",\"rmd\":" + std::to_string(fx.revMode) +
+                ",\"rpd\":" + std::to_string(fx.revPreDelayMs) +
+                ",\"rdc\":" + std::to_string(fx.revDecaySec) +
+                ",\"rsz\":" + std::to_string(fx.revSize) +
+                ",\"rlc\":" + std::to_string(fx.revLowCutHz) +
+                ",\"rhc\":" + std::to_string(fx.revHighCutHz) +
+                ",\"rmx\":" + std::to_string(fx.revMix) +
+                ",\"lim\":" + std::to_string(fx.limiterOn ? 1 : 0) +
+                ",\"mbs\":" + std::to_string(fx.monoBass ? 1 : 0) +
+                ",\"pon\":" + std::to_string(fx.punishOn ? 1 : 0) +
+                ",\"pam\":" + std::to_string(fx.punishAmount) +
+                ",\"pmd\":" + std::to_string(static_cast<int>(fx.punishMode));
+        json += "},\"slots\":[";
         for (int i = 0; i < kTotalSlots; ++i) {
             const auto& s = slots_[i];
             if (i > 0) json += ",";
@@ -479,7 +583,7 @@ public:
         return pack.saveAtomic(targetPath);
     }
 
-    bool loadKitFromNm6(const std::filesystem::path& packPath) {
+    bool loadKitFromNm6(const std::filesystem::path& packPath, bool* outHasMixParams = nullptr) {
         Nm6Pack pack;
         if (!pack.loadFromFile(packPath)) return false;
 
@@ -492,26 +596,64 @@ public:
         std::lock_guard<std::mutex> lock(stateMutex_);
         for (auto& v : voices_) v.active = false;
         for (int i = 0; i < kTotalSlots; ++i) {
-            for (int vl = 0; vl < kMaxVelLayers; ++vl) {
-                slots_[i].velLayers[vl].rrs.clear();
-                slots_[i].velLayers[vl].lastRRIdx = -1;
-            }
-            slots_[i].name = "EMPTY";
-            slots_[i].hasCustomColor = false;
-            slots_[i].stageX = 0.0f;
-            slots_[i].stageY = 0.0f;
-            slots_[i].gain = 1.0f;
-            slots_[i].pitchSemitones = 0.0f;
-            slots_[i].attackMs = 0.0f;
-            slots_[i].releaseMs = 4000.0f;
-            slots_[i].fakeRR = false;
-            slots_[i].fakeVel = false;
-            slots_[i].oneShot = true;
-            slots_[i].chokeGroup = 0;
-            slots_[i].reverse = false;
+            resetSlotDefaultsLocked(slots_[i]);
         }
 
         const std::string& js = pack.kitMetadataJson;
+        bool hasMix = false;
+        auto mixPos = js.find("\"mix\":{");
+        if (mixPos != std::string::npos) {
+            auto mixEnd = js.find("},\"slots\"", mixPos);
+            if (mixEnd != std::string::npos) {
+                hasMix = true;
+                std::string mChunk = js.substr(mixPos, mixEnd - mixPos + 1);
+                auto readMInt = [&](const char* k, int& dst) {
+                    auto kp = mChunk.find(k);
+                    if (kp != std::string::npos) dst = std::atoi(mChunk.c_str() + kp + std::strlen(k));
+                };
+                auto readMBool = [&](const char* k, bool& dst) {
+                    auto kp = mChunk.find(k);
+                    if (kp != std::string::npos) dst = (std::atoi(mChunk.c_str() + kp + std::strlen(k)) != 0);
+                };
+                auto readMFlt = [&](const char* k, float& dst) {
+                    auto kp = mChunk.find(k);
+                    if (kp != std::string::npos) dst = std::strtof(mChunk.c_str() + kp + std::strlen(k), nullptr);
+                };
+                auto& p = params_;
+                auto& fx = p.fx;
+                readMFlt("\"bg0\":", p.busGain[0]); readMFlt("\"bg1\":", p.busGain[1]);
+                readMFlt("\"bg2\":", p.busGain[2]); readMFlt("\"bg3\":", p.busGain[3]);
+                readMBool("\"bb0\":", p.busBypass[0]); readMBool("\"bb1\":", p.busBypass[1]);
+                readMBool("\"bb2\":", p.busBypass[2]); readMBool("\"bb3\":", p.busBypass[3]);
+                readMBool("\"gfm\":", p.globalFakeMic);
+                readMBool("\"fon\":", fx.filterOn); readMInt("\"ftp\":", fx.filterType);
+                readMFlt("\"fco\":", fx.filterCutoffHz); readMFlt("\"frs\":", fx.filterRes);
+                readMBool("\"eon\":", fx.eqOn);
+                readMFlt("\"elf\":", fx.eqLowFreq); readMFlt("\"elg\":", fx.eqLowGain);
+                readMFlt("\"emf\":", fx.eqMidFreq); readMFlt("\"emg\":", fx.eqMidGain);
+                readMFlt("\"ehf\":", fx.eqHighFreq); readMFlt("\"ehg\":", fx.eqHighGain);
+                readMBool("\"con\":", fx.compOn); readMFlt("\"cth\":", fx.compThreshDb);
+                readMFlt("\"crt\":", fx.compRatio); readMFlt("\"cat\":", fx.compAttackMs);
+                readMFlt("\"crl\":", fx.compReleaseMs); readMFlt("\"ckn\":", fx.compKneeDb);
+                readMFlt("\"cmk\":", fx.compMakeupDb);
+                readMBool("\"son\":", fx.satOn); readMInt("\"smd\":", fx.satMode);
+                readMFlt("\"sdr\":", fx.satDrive); readMFlt("\"swm\":", fx.satWarmth); readMFlt("\"smx\":", fx.satMix);
+                readMBool("\"don\":", fx.delayOn); readMInt("\"dmd\":", fx.delayMode);
+                readMFlt("\"dtm\":", fx.delayTimeMs); readMFlt("\"dfb\":", fx.delayFeedback);
+                readMFlt("\"dtn\":", fx.delayTone); readMFlt("\"dwd\":", fx.delayWidth); readMFlt("\"dmx\":", fx.delayMix);
+                readMBool("\"ron\":", fx.revOn); readMInt("\"rmd\":", fx.revMode);
+                readMFlt("\"rpd\":", fx.revPreDelayMs); readMFlt("\"rdc\":", fx.revDecaySec);
+                readMFlt("\"rsz\":", fx.revSize); readMFlt("\"rlc\":", fx.revLowCutHz);
+                readMFlt("\"rhc\":", fx.revHighCutHz); readMFlt("\"rmx\":", fx.revMix);
+                readMBool("\"lim\":", fx.limiterOn); readMBool("\"mbs\":", fx.monoBass);
+                readMBool("\"pon\":", fx.punishOn); readMFlt("\"pam\":", fx.punishAmount);
+                int pmd = static_cast<int>(fx.punishMode);
+                readMInt("\"pmd\":", pmd);
+                fx.punishMode = static_cast<PunishMode>(std::clamp(pmd, 0, 2));
+            }
+        }
+        if (outHasMixParams) *outHasMixParams = hasMix;
+
         size_t pos = 0;
         while ((pos = js.find("{\"i\":", pos)) != std::string::npos) {
             int idx = std::atoi(js.c_str() + pos + 5);
@@ -581,9 +723,11 @@ public:
         return true;
     }
 
+    // Ultra-Low CPU Block-Based Audio Processing (Active Voice List + Fast-Path Playback + Multi-Out Safe Idle Sleep)
     void process(ProcessBuffers& pb) {
         if (!pb.mainL || !pb.mainR || pb.numSamples <= 0) return;
 
+        const int N = pb.numSamples;
         bool runClose = !params_.busBypass[0] && params_.busGain[0] > 0.0001f;
         bool runRoom  = !params_.busBypass[1] && params_.busGain[1] > 0.0001f;
         bool runHall  = !params_.busBypass[2] && params_.busGain[2] > 0.0001f;
@@ -591,58 +735,101 @@ public:
 
         std::unique_lock<std::mutex> lock(stateMutex_, std::try_to_lock);
         if (!lock.owns_lock() && !pb.offlineRender) {
-            std::fill(pb.mainL, pb.mainL + pb.numSamples, 0.0f);
-            std::fill(pb.mainR, pb.mainR + pb.numSamples, 0.0f);
+            std::fill(pb.mainL, pb.mainL + N, 0.0f);
+            std::fill(pb.mainR, pb.mainR + N, 0.0f);
             return;
         }
         if (!lock.owns_lock() && pb.offlineRender) lock.lock();
 
-        int initVoices = 0;
-        for (const auto& v : voices_) if (v.active) ++initVoices;
-        if (initVoices == 0 && idleSleeping_.load(std::memory_order_relaxed)) {
-            std::fill(pb.mainL, pb.mainL + pb.numSamples, 0.0f);
-            std::fill(pb.mainR, pb.mainR + pb.numSamples, 0.0f);
+        // Collect ONLY active voices once per block
+        Voice* activeList[kMaxVoices];
+        int activeCount = 0;
+        for (auto& v : voices_) {
+            if (v.active && v.primaryBuf && v.primLen >= 4) {
+                activeList[activeCount++] = &v;
+            }
+        }
+
+        if (activeCount == 0 && idleSleeping_.load(std::memory_order_relaxed)) {
+            std::fill(pb.mainL, pb.mainL + N, 0.0f);
+            std::fill(pb.mainR, pb.mainR + N, 0.0f);
             for (int b = 0; b < 4; ++b) {
                 if (pb.auxActive[b] && pb.auxL[b] && pb.auxR[b]) {
-                    std::fill(pb.auxL[b], pb.auxL[b] + pb.numSamples, 0.0f);
-                    std::fill(pb.auxR[b], pb.auxR[b] + pb.numSamples, 0.0f);
+                    std::fill(pb.auxL[b], pb.auxL[b] + N, 0.0f);
+                    std::fill(pb.auxR[b], pb.auxR[b] + N, 0.0f);
                 }
             }
             activeVoices_.store(0, std::memory_order_relaxed);
             return;
         }
 
-        float blockPeak = 0.0f;
-        for (int n = 0; n < pb.numSamples; ++n) {
-            float sumCloseL = 0.0f, sumCloseR = 0.0f;
-            float sumRoomRealL = 0.0f, sumRoomRealR = 0.0f, sendRoomL = 0.0f, sendRoomR = 0.0f;
-            float sumHallRealL = 0.0f, sumHallRealR = 0.0f, sendHallL = 0.0f, sendHallR = 0.0f;
-            float sumSubRealL  = 0.0f, sumSubRealR  = 0.0f, sendSubL  = 0.0f, sendSubR  = 0.0f;
+        ensureScratch(N);
+        float* cL = scratchCloseL_.data(); float* cR = scratchCloseR_.data();
+        float* rrL = scratchRoomRealL_.data(); float* rrR = scratchRoomRealR_.data();
+        float* srL = scratchSendRoomL_.data(); float* srR = scratchSendRoomR_.data();
+        float* hrL = scratchHallRealL_.data(); float* hrR = scratchHallRealR_.data();
+        float* shL = scratchSendHallL_.data(); float* shR = scratchSendHallR_.data();
+        float* sbL = scratchSubRealL_.data();  float* sbR = scratchSubRealR_.data();
+        float* ssL = scratchSendSubL_.data();  float* ssR = scratchSendSubR_.data();
 
-            if (initVoices > 0) for (auto& v : voices_) {
-                if (!v.active || !v.primaryBuf) continue;
+        std::fill(cL, cL + N, 0.0f); std::fill(cR, cR + N, 0.0f);
+        if (runRoom) {
+            std::fill(rrL, rrL + N, 0.0f); std::fill(rrR, rrR + N, 0.0f);
+            std::fill(srL, srL + N, 0.0f); std::fill(srR, srR + N, 0.0f);
+        }
+        if (runHall) {
+            std::fill(hrL, hrL + N, 0.0f); std::fill(hrR, hrR + N, 0.0f);
+            std::fill(shL, shL + N, 0.0f); std::fill(shR, shR + N, 0.0f);
+        }
+        if (runSub) {
+            std::fill(sbL, sbL + N, 0.0f); std::fill(sbR, sbR + N, 0.0f);
+            std::fill(ssL, ssL + N, 0.0f); std::fill(ssR, ssR + N, 0.0f);
+        }
 
+        // Reset synthetic mic reverb tails cleanly on OFF -> ON transition
+        if (runRoom && !wasRoomRun_) roomBus_.reset();
+        wasRoomRun_ = runRoom;
+        if (runHall && !wasHallRun_) hallBus_.reset();
+        wasHallRun_ = runHall;
+
+        // Voice-outer, sample-inner block loop (dramatically higher CPU L1 cache hit rate!)
+        int remainingActive = 0;
+        for (int vi = 0; vi < activeCount; ++vi) {
+            Voice& v = *activeList[vi];
+            const double regionLen = std::max(8.0, v.endFrame - v.startFrame);
+            const float depth = std::clamp(v.stageDepth, 0.0f, 1.0f);
+            const float closeDryScale = 1.0f - depth * 0.62f;
+            const float roomDepthSend = 0.35f + depth * 1.15f;
+            const float hallDepthSend = 0.20f + depth * 1.85f;
+            const bool needRoomSend = !v.hasRealRoom && v.synthRoom && runRoom;
+            const bool needHallSend = !v.hasRealHall && v.synthHall && runHall;
+            const bool needSubSend  = !v.hasRealSub  && v.synthSub  && runSub;
+            const bool needRealRoom = v.hasRealRoom && runRoom;
+            const bool needRealHall = v.hasRealHall && runHall;
+            const bool needRealSub  = v.hasRealSub  && runSub;
+            const bool hasExtraDsp  = v.useToneEq || v.useFormant || v.useVelLpf || (v.velDrive > 0.01f) || v.useStageLpf;
+
+            for (int n = 0; n < N; ++n) {
                 if (v.choking) {
                     v.chokeFade -= v.chokeDec;
-                    if (v.chokeFade <= 0.0f) { v.active = false; continue; }
+                    if (v.chokeFade <= 0.0f) { v.active = false; break; }
                 }
 
-                double regionLen = std::max(8.0, v.endFrame - v.startFrame);
                 double relPos = v.playPos - v.startFrame;
                 if (relPos < 0.0 || relPos >= regionLen) {
                     v.active = false;
-                    continue;
+                    break;
                 }
 
                 if (!v.releasing) {
-                    v.envVal = std::min(1.0f, v.envVal + v.attackInc);
+                    if (v.envVal < 1.0f) v.envVal = std::min(1.0f, v.envVal + v.attackInc);
                     if (v.oneShot && v.elapsedHostSamples >= v.releaseStartFrame) {
                         v.releasing = true;
                     }
                 }
                 if (v.releasing) {
-                    v.envVal -= v.releaseDec;
-                    if (v.envVal <= 0.0001f) { v.active = false; continue; }
+                    v.envVal *= v.releaseMul;
+                    if (v.envVal <= 0.0005f) { v.active = false; break; }
                 }
 
                 float waveEnv = 1.0f;
@@ -656,103 +843,125 @@ public:
                     waveEnv *= tOut * tOut;
                 }
 
-                float totalGain = v.envVal * waveEnv * v.chokeFade * v.velGain * v.slotGain;
+                float totalGain = v.envVal * waveEnv * v.chokeFade * v.baseGain;
 
-                float cL = 0.0f, cR = 0.0f;
-                if (!readHermite(*v.primaryBuf, v.playPos, v.reverse, cL, cR)) {
-                    v.active = false;
-                    continue;
+                float sL = 0.0f, sR = 0.0f;
+                if (v.unitPitch) {
+                    size_t idx = v.reverse
+                        ? static_cast<size_t>(std::clamp<int64_t>(static_cast<int64_t>(v.primLen - 1) - static_cast<int64_t>(v.playPos), 0, static_cast<int64_t>(v.primLen - 1)))
+                        : static_cast<size_t>(v.playPos);
+                    if (idx >= v.primLen) { v.active = false; break; }
+                    sL = v.primL[idx];
+                    sR = v.primR[idx];
+                } else {
+                    if (!readHermite(*v.primaryBuf, v.playPos, v.reverse, sL, sR)) {
+                        v.active = false;
+                        break;
+                    }
                 }
 
-                if (v.useToneEq) {
-                    cL = v.toneHiL.process(v.toneLowL.process(cL));
-                    cR = v.toneHiR.process(v.toneLowR.process(cR));
-                }
-                if (v.useFormant) {
-                    cL = v.formantL.process(cL);
-                    cR = v.formantR.process(cR);
-                }
-                if (v.useVelLpf) {
-                    cL = v.velLpfL.process(cL);
-                    cR = v.velLpfR.process(cR);
-                }
-                if (v.velDrive > 0.01f) {
-                    float d = 1.0f + v.velDrive * 1.5f;
-                    cL = fastTanh(cL * d) / d * 1.15f;
-                    cR = fastTanh(cR * d) / d * 1.15f;
+                if (hasExtraDsp) {
+                    if (v.useToneEq) {
+                        sL = v.toneHiL.process(v.toneLowL.process(sL));
+                        sR = v.toneHiR.process(v.toneLowR.process(sR));
+                    }
+                    if (v.useFormant) {
+                        sL = v.formantL.process(sL);
+                        sR = v.formantR.process(sR);
+                    }
+                    if (v.useVelLpf) {
+                        sL = v.velLpfL.process(sL);
+                        sR = v.velLpfR.process(sR);
+                    }
+                    if (v.velDrive > 0.01f) {
+                        float d = 1.0f + v.velDrive * 1.5f;
+                        sL = fastTanh(sL * d) / d * 1.15f;
+                        sR = fastTanh(sR * d) / d * 1.15f;
+                    }
+                    if (v.useStageLpf) {
+                        sL = v.stageLpfL.process(sL);
+                        sR = v.stageLpfR.process(sR);
+                    }
                 }
 
-                float depth = std::clamp(v.stageDepth, 0.0f, 1.0f);
-                float stagedL = v.stageLpfL.process(cL) * totalGain * v.panL;
-                float stagedR = v.stageLpfR.process(cR) * totalGain * v.panR;
-                float closeDryScale = 1.0f - depth * 0.62f;
+                float stagedL = sL * totalGain * v.panL;
+                float stagedR = sR * totalGain * v.panR;
 
-                sumCloseL += stagedL * closeDryScale;
-                sumCloseR += stagedR * closeDryScale;
+                cL[n] += stagedL * closeDryScale;
+                cR[n] += stagedR * closeDryScale;
 
-                float roomDepthSend = 0.35f + depth * 1.15f;
-                float hallDepthSend = 0.20f + depth * 1.85f;
-
-                if (v.hasRealRoom) {
+                if (needRealRoom) {
                     float rl = 0.0f, rr = 0.0f;
-                    readHermite(*v.sample.mics[1], v.playPos, v.reverse, rl, rr);
-                    sumRoomRealL += rl * totalGain * v.panL * roomDepthSend;
-                    sumRoomRealR += rr * totalGain * v.panR * roomDepthSend;
-                } else if (v.synthRoom && runRoom) {
-                    sendRoomL += stagedL * roomDepthSend;
-                    sendRoomR += stagedR * roomDepthSend;
+                    if (readHermite(*v.sample.mics[1], v.playPos, v.reverse, rl, rr)) {
+                        rrL[n] += rl * totalGain * v.panL * roomDepthSend;
+                        rrR[n] += rr * totalGain * v.panR * roomDepthSend;
+                    }
+                } else if (needRoomSend) {
+                    srL[n] += stagedL * roomDepthSend;
+                    srR[n] += stagedR * roomDepthSend;
                 }
 
-                if (v.hasRealHall) {
+                if (needRealHall) {
                     float hl = 0.0f, hr = 0.0f;
-                    readHermite(*v.sample.mics[2], v.playPos, v.reverse, hl, hr);
-                    sumHallRealL += hl * totalGain * v.panL * hallDepthSend;
-                    sumHallRealR += hr * totalGain * v.panR * hallDepthSend;
-                } else if (v.synthHall && runHall) {
-                    sendHallL += stagedL * hallDepthSend;
-                    sendHallR += stagedR * hallDepthSend;
+                    if (readHermite(*v.sample.mics[2], v.playPos, v.reverse, hl, hr)) {
+                        hrL[n] += hl * totalGain * v.panL * hallDepthSend;
+                        hrR[n] += hr * totalGain * v.panR * hallDepthSend;
+                    }
+                } else if (needHallSend) {
+                    shL[n] += stagedL * hallDepthSend;
+                    shR[n] += stagedR * hallDepthSend;
                 }
 
-                if (v.hasRealSub) {
+                if (needRealSub) {
                     float ll = 0.0f, lr = 0.0f;
-                    readHermite(*v.sample.mics[3], v.playPos, v.reverse, ll, lr);
-                    float m = 0.5f * (ll + lr) * totalGain;
-                    sumSubRealL += m; sumSubRealR += m;
-                } else if (v.synthSub && runSub) {
-                    sendSubL += stagedL; sendSubR += stagedR;
+                    if (readHermite(*v.sample.mics[3], v.playPos, v.reverse, ll, lr)) {
+                        float m = 0.5f * (ll + lr) * totalGain;
+                        sbL[n] += m; sbR[n] += m;
+                    }
+                } else if (needSubSend) {
+                    ssL[n] += stagedL; ssR[n] += stagedR;
                 }
 
                 v.playPos += v.pitchRatio;
                 v.elapsedHostSamples += 1.0;
             }
+            if (v.active) ++remainingActive;
+        }
 
-            float busL[4] = { 0, 0, 0, 0 };
-            float busR[4] = { 0, 0, 0, 0 };
+        // Mix 4 Mic Buses + Master FX + Multi-Out Aux peak tracking
+        float blockPeak = 0.0f;
+        const float g0 = params_.busGain[0], g1 = params_.busGain[1], g2 = params_.busGain[2], g3 = params_.busGain[3];
 
-            if (runClose) { busL[0] = sumCloseL * params_.busGain[0]; busR[0] = sumCloseR * params_.busGain[0]; }
+        for (int n = 0; n < N; ++n) {
+            float busL[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+            float busR[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+
+            if (runClose) { busL[0] = cL[n] * g0; busR[0] = cR[n] * g0; }
             if (runRoom) {
                 float sL = 0.0f, sR = 0.0f;
-                roomBus_.process(sendRoomL, sendRoomR, sL, sR);
-                busL[1] = (sumRoomRealL + sL) * params_.busGain[1];
-                busR[1] = (sumRoomRealR + sR) * params_.busGain[1];
+                roomBus_.process(srL[n], srR[n], sL, sR);
+                busL[1] = (rrL[n] + sL) * g1;
+                busR[1] = (rrR[n] + sR) * g1;
             }
             if (runHall) {
                 float sL = 0.0f, sR = 0.0f;
-                hallBus_.process(sendHallL, sendHallR, sL, sR);
-                busL[2] = (sumHallRealL + sL) * params_.busGain[2];
-                busR[2] = (sumHallRealR + sR) * params_.busGain[2];
+                hallBus_.process(shL[n], shR[n], sL, sR);
+                busL[2] = (hrL[n] + sL) * g2;
+                busR[2] = (hrR[n] + sR) * g2;
             }
             if (runSub) {
                 float sL = 0.0f, sR = 0.0f;
-                subBus_.process(sendSubL, sendSubR, sL, sR);
-                busL[3] = (sumSubRealL + sL) * params_.busGain[3];
-                busR[3] = (sumSubRealR + sR) * params_.busGain[3];
+                subBus_.process(ssL[n], ssR[n], sL, sR);
+                busL[3] = (sbL[n] + sL) * g3;
+                busR[3] = (sbR[n] + sR) * g3;
             }
 
             float mainL = 0.0f, mainR = 0.0f;
             for (int b = 0; b < 4; ++b) {
                 if (pb.auxActive[b] && pb.auxL[b] && pb.auxR[b]) {
                     pb.auxL[b][n] = busL[b]; pb.auxR[b][n] = busR[b];
+                    float auxPk = std::max(std::fabs(busL[b]), std::fabs(busR[b]));
+                    if (auxPk > blockPeak) blockPeak = auxPk;
                 } else {
                     mainL += busL[b]; mainR += busR[b];
                 }
@@ -761,16 +970,13 @@ public:
             masterFx_.process(mainL, mainR, params_.fx);
             pb.mainL[n] = mainL;
             pb.mainR[n] = mainR;
-            blockPeak = std::max(blockPeak, std::max(std::fabs(mainL), std::fabs(mainR)));
+            float mPk = std::max(std::fabs(mainL), std::fabs(mainR));
+            if (mPk > blockPeak) blockPeak = mPk;
         }
 
-        int cnt = 0;
-        if (initVoices > 0) {
-            for (const auto& v : voices_) if (v.active) ++cnt;
-        }
-        activeVoices_.store(cnt, std::memory_order_relaxed);
-        if (cnt == 0 && blockPeak < 1e-5f) {
-            idleSamples_ += pb.numSamples;
+        activeVoices_.store(remainingActive, std::memory_order_relaxed);
+        if (remainingActive == 0 && blockPeak < 1e-5f) {
+            idleSamples_ += N;
             if (idleSamples_ > static_cast<int>(sr_ * 0.25f)) {
                 idleSleeping_.store(true, std::memory_order_relaxed);
             }
@@ -781,25 +987,46 @@ public:
     }
 
 private:
+    void ensureScratch(int n) {
+        if (static_cast<int>(scratchCloseL_.size()) >= n) return;
+        size_t sz = static_cast<size_t>(std::max(n, 2048));
+        scratchCloseL_.assign(sz, 0.0f);    scratchCloseR_.assign(sz, 0.0f);
+        scratchRoomRealL_.assign(sz, 0.0f); scratchRoomRealR_.assign(sz, 0.0f);
+        scratchSendRoomL_.assign(sz, 0.0f); scratchSendRoomR_.assign(sz, 0.0f);
+        scratchHallRealL_.assign(sz, 0.0f); scratchHallRealR_.assign(sz, 0.0f);
+        scratchSendHallL_.assign(sz, 0.0f); scratchSendHallR_.assign(sz, 0.0f);
+        scratchSubRealL_.assign(sz, 0.0f);  scratchSubRealR_.assign(sz, 0.0f);
+        scratchSendSubL_.assign(sz, 0.0f);  scratchSendSubR_.assign(sz, 0.0f);
+    }
+
     float applyVelocityCurve(float v) const {
         if (params_.velCurve == VelocityCurve::Soft) return std::pow(v, 0.65f);
         if (params_.velCurve == VelocityCurve::Hard) return std::pow(v, 1.55f);
         return v;
     }
 
+    // Fixed Reverse Sample-0 boundary check (`idxF > n - 1` instead of `>=`)
     static bool readHermite(const AudioBuffer& buf, double pos, bool rev, float& outL, float& outR) {
         size_t n = buf.numFrames();
         if (n < 4) return false;
-        double idxF = rev ? (static_cast<double>(n - 1) - pos) : pos;
-        if (idxF < 0.0 || idxF >= static_cast<double>(n - 1)) return false;
+        double maxIdx = static_cast<double>(n - 1);
+        double idxF = rev ? (maxIdx - pos) : pos;
+        if (idxF < 0.0 || idxF > maxIdx) return false;
 
-        int i1 = static_cast<int>(idxF);
+        int i1 = std::min(static_cast<int>(idxF), static_cast<int>(n - 1));
         float t = static_cast<float>(idxF - static_cast<double>(i1));
+        if (t <= 1e-6f) {
+            outL = buf.left[i1];
+            outR = buf.right[i1];
+            return true;
+        }
         int i0 = std::max(0, i1 - 1);
         int i2 = std::min(static_cast<int>(n - 1), i1 + 1);
         int i3 = std::min(static_cast<int>(n - 1), i1 + 2);
 
-        auto hermite = [&](const std::vector<float>& ch) -> float {
+        const float* lPtr = buf.left.data();
+        const float* rPtr = buf.right.data();
+        auto hermite = [&](const float* ch) -> float {
             float y0 = ch[i0], y1 = ch[i1], y2 = ch[i2], y3 = ch[i3];
             float c0 = y1;
             float c1 = 0.5f * (y2 - y0);
@@ -807,28 +1034,28 @@ private:
             float c3 = 0.5f * (y3 - y0) + 1.5f * (y1 - y2);
             return ((c3 * t + c2) * t + c1) * t + c0;
         };
-        outL = hermite(buf.left);
-        outR = hermite(buf.right);
+        outL = hermite(lPtr);
+        outR = hermite(rPtr);
         return true;
     }
 
     int selectVelocityLayer(const SlotConfig& s, float shapedVel) const {
-        std::vector<int> populated;
+        int populated[kMaxVelLayers];
+        int popCount = 0;
         for (int vl = 0; vl < kMaxVelLayers; ++vl) {
-            if (!s.velLayers[vl].rrs.empty()) populated.push_back(vl);
+            if (!s.velLayers[vl].rrs.empty()) populated[popCount++] = vl;
         }
-        if (populated.empty()) return 0;
-        if (populated.size() == 1) return populated[0];
+        if (popCount == 0) return 0;
+        if (popCount == 1) return populated[0];
 
         int bucket = std::clamp(static_cast<int>(shapedVel * static_cast<float>(kMaxVelLayers)), 0, kMaxVelLayers - 1);
         if (!s.velLayers[bucket].rrs.empty()) return bucket;
 
-        // Nearest populated layer fallback
         int bestVl = populated[0];
         int bestDist = std::abs(bestVl - bucket);
-        for (int vl : populated) {
-            int d = std::abs(vl - bucket);
-            if (d < bestDist) { bestDist = d; bestVl = vl; }
+        for (int i = 1; i < popCount; ++i) {
+            int d = std::abs(populated[i] - bucket);
+            if (d < bestDist) { bestDist = d; bestVl = populated[i]; }
         }
         return bestVl;
     }
@@ -861,7 +1088,7 @@ private:
         layer.lastRRIdx = chosenRR;
         const auto& mm = layer.rrs[static_cast<size_t>(chosenRR)];
         auto prim = mm.primarySource();
-        if (!prim) return;
+        if (!prim || prim->numFrames() < 4) return;
 
         float rrStrength  = s.fakeRR  ? ((numRRs <= 2) ? 1.0f : 0.45f) : 0.0f;
         float velStrength = s.fakeVel ? 1.0f : 0.0f;
@@ -880,11 +1107,15 @@ private:
         v.oneShot = s.oneShot;
         v.sample = mm;
         v.primaryBuf = prim;
+        v.primL = prim->left.data();
+        v.primR = prim->right.data();
+        v.primLen = prim->numFrames();
         v.slotGain = s.gain;
         v.stageDepth = s.stageY;
         v.chokeFade = 1.0f;
         v.elapsedHostSamples = 0.0;
         v.age = ++voiceCounter_;
+
         lastVoiceSlot_.store(slotIdx, std::memory_order_relaxed);
         lastVoiceVel_.store(vlIdx, std::memory_order_relaxed);
         lastVoiceRR_.store(chosenRR, std::memory_order_relaxed);
@@ -892,20 +1123,29 @@ private:
 
         idleSamples_ = 0;
         idleSleeping_.store(false, std::memory_order_relaxed);
-        double totalF = static_cast<double>(prim->numFrames());
+
+        double totalF = static_cast<double>(v.primLen);
         v.startFrame = std::clamp(static_cast<double>(mm.startNorm), 0.0, 0.98) * totalF;
         v.endFrame   = std::max(v.startFrame + 8.0, std::clamp(static_cast<double>(mm.endNorm), 0.02, 1.0) * totalF);
         double regLen = std::max(8.0, v.endFrame - v.startFrame);
         v.fadeInFrames  = std::clamp(static_cast<double>(mm.fadeInNorm), 0.0, 0.5) * regLen;
         v.fadeOutFrames = std::clamp(static_cast<double>(mm.fadeOutNorm), 0.0, 0.5) * regLen;
 
-        float pan01 = (s.stageX + 1.0f) * 0.5f;
-        v.panL = std::cos(pan01 * kPi * 0.5f);
-        v.panR = std::sin(pan01 * kPi * 0.5f);
+        if (std::fabs(s.stageX) < 0.005f) {
+            v.panL = 0.70710678f;
+            v.panR = 0.70710678f;
+        } else {
+            float pan01 = (s.stageX + 1.0f) * 0.5f;
+            v.panL = std::cos(pan01 * kPi * 0.5f);
+            v.panR = std::sin(pan01 * kPi * 0.5f);
+        }
 
-        float depthCutoff = 19500.0f - std::clamp(s.stageY, 0.0f, 1.0f) * 12500.0f;
-        v.stageLpfL.setLowPass(sr_, depthCutoff); v.stageLpfR.setLowPass(sr_, depthCutoff);
-        v.stageLpfL.reset(); v.stageLpfR.reset();
+        v.useStageLpf = (s.stageY > 0.01f);
+        if (v.useStageLpf) {
+            float depthCutoff = 19500.0f - std::clamp(s.stageY, 0.0f, 1.0f) * 12500.0f;
+            v.stageLpfL.setLowPass(sr_, depthCutoff); v.stageLpfR.setLowPass(sr_, depthCutoff);
+            v.stageLpfL.reset(); v.stageLpfR.reset();
+        }
 
         v.useToneEq = (std::fabs(s.toneLowDb) > 0.05f || std::fabs(s.toneHighDb) > 0.05f);
         if (v.useToneEq) {
@@ -925,7 +1165,10 @@ private:
 
         double sampleRateRatio = static_cast<double>(prim->sampleRate) / static_cast<double>(sr_);
         double centsOffset = (rrStrength > 0.01f) ? (kPitchCents[step] * rrStrength) : 0.0;
-        v.pitchRatio = sampleRateRatio * std::pow(2.0, (static_cast<double>(s.pitchSemitones) + centsOffset / 100.0) / 12.0);
+        double totalSemi = static_cast<double>(s.pitchSemitones) + centsOffset / 100.0;
+        v.pitchRatio = (std::fabs(totalSemi) < 1e-4) ? sampleRateRatio : (sampleRateRatio * std::pow(2.0, totalSemi / 12.0));
+        v.unitPitch = (std::fabs(v.pitchRatio - 1.0) < 1e-6);
+
         double rrStartOffset = (rrStrength > 0.01f && !s.reverse) ? (kStartMs[step] * rrStrength * 0.001 * prim->sampleRate) : 0.0;
         v.playPos = std::min(v.endFrame - 4.0, v.startFrame + rrStartOffset);
 
@@ -937,14 +1180,16 @@ private:
         }
 
         v.velGain = std::pow(vel, 1.35f);
+        v.baseGain = v.velGain * v.slotGain;
 
         float extraAttackMs = (velStrength > 0.01f) ? ((1.0f - vel) * 8.5f * velStrength) : 0.0f;
         float totalAttackMs = std::max(0.2f, s.attackMs + extraAttackMs);
         double attSamples = sr_ * totalAttackMs * 0.001;
         v.attackInc = (attSamples <= 1.0) ? 1.0f : static_cast<float>(1.0 / attSamples);
 
-        double relSamples = std::max(8.0, static_cast<double>(sr_) * std::max(10.0f, s.releaseMs) * 0.001);
-        v.releaseDec = static_cast<float>(1.0 / relSamples);
+        // Natural Exponential Percussion Release: reaches -60 dB (0.001) in releaseMs
+        double relSamples = std::max(16.0, static_cast<double>(sr_) * std::max(10.0f, s.releaseMs) * 0.001);
+        v.releaseMul = fastExp(-6.907755f / static_cast<float>(relSamples));
         v.releaseStartFrame = std::max(attSamples * 0.5, relSamples * 0.25);
         if (s.releaseMs >= 3800.0f) {
             v.releaseStartFrame = 1e12;
@@ -960,20 +1205,16 @@ private:
         }
         v.velDrive = (vel > 0.72f) ? ((vel - 0.72f) * 3.0f * velStrength) : 0.0f;
 
-        v.hasRealRoom = mm.hasMic(MicBus::Room);
-        v.hasRealHall = mm.hasMic(MicBus::Hall);
-        v.hasRealSub  = mm.hasMic(MicBus::Sub);
+        // Prevent double-playback when a single Sub/Room/Hall file is the primarySource
+        v.hasRealRoom = mm.hasMic(MicBus::Room) && (mm.mics[1] != prim);
+        v.hasRealHall = mm.hasMic(MicBus::Hall) && (mm.mics[2] != prim);
+        v.hasRealSub  = mm.hasMic(MicBus::Sub)  && (mm.mics[3] != prim);
 
         v.synthRoom = enableFakeMics && !v.hasRealRoom;
         v.synthHall = enableFakeMics && !v.hasRealHall;
         v.synthSub  = enableFakeMics && !v.hasRealSub;
     }
 
-    float sr_ = 44100.0f;
-    EngineParams params_;
-    std::array<SlotConfig, kTotalSlots> slots_;
-    std::array<Voice, kMaxVoices> voices_;
-    std::array<std::atomic<int>, 128> notePlaying_{};
     void recalcRamBytesLocked() {
         uint64_t bytes = 0;
         for (const auto& s : slots_) {
@@ -989,10 +1230,19 @@ private:
         totalRamBytes_.store(bytes, std::memory_order_relaxed);
     }
 
+    float sr_ = 44100.0f;
+    EngineParams params_;
+    std::array<SlotConfig, kTotalSlots> slots_;
+    std::array<Voice, kMaxVoices> voices_;
+    std::array<std::atomic<int>, 128> notePlaying_{};
+
     std::atomic<int> activeVoices_{0};
     std::atomic<uint64_t> totalRamBytes_{0};
     std::atomic<bool> idleSleeping_{true};
     int idleSamples_ = 1000000;
+    bool wasRoomRun_ = false;
+    bool wasHallRun_ = false;
+
     std::atomic<int> lastVoiceSlot_{-1};
     std::atomic<int> lastVoiceVel_{-1};
     std::atomic<int> lastVoiceRR_{-1};
@@ -1000,6 +1250,12 @@ private:
     uint64_t voiceCounter_ = 0;
     uint32_t rngState_ = 0x9E3779B9u;
     std::mutex stateMutex_;
+
+    // Pre-allocated block-processing scratch buffers
+    std::vector<float> scratchCloseL_, scratchCloseR_;
+    std::vector<float> scratchRoomRealL_, scratchRoomRealR_, scratchSendRoomL_, scratchSendRoomR_;
+    std::vector<float> scratchHallRealL_, scratchHallRealR_, scratchSendHallL_, scratchSendHallR_;
+    std::vector<float> scratchSubRealL_, scratchSubRealR_, scratchSendSubL_, scratchSendSubR_;
 
     StereoSpaceBus roomBus_;
     StereoSpaceBus hallBus_;
