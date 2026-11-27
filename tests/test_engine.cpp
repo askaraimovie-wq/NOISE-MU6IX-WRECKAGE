@@ -186,6 +186,6 @@ int main() {
     double ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
     double realMs = (1000.0 * 256.0 / 44100.0) * 1000.0;
     double cpuPct = (ms / realMs) * 100.0;
-    std::cout << "ALL v1.1.0 TESTS PASSED! 5.8s audio rendered in " << ms << " ms (~" << cpuPct << "% CPU)" << std::endl;
+    std::cout << "ALL v1.1.1 TESTS PASSED! 5.8s audio rendered in " << ms << " ms (~" << cpuPct << "% CPU)" << std::endl;
     return 0;
 }
