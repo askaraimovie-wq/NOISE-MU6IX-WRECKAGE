@@ -5,6 +5,8 @@
 #include <cmath>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
+#include <cstdlib>
 #ifdef _WIN32
 #include <windows.h>
 #endif
@@ -36,6 +38,58 @@ static std::string wideToUtf8(const std::wstring& w) {
 #else
     return std::string(w.begin(), w.end());
 #endif
+}
+
+static std::filesystem::path getGlobalConfigPath() {
+#ifdef _WIN32
+    wchar_t* appData = nullptr;
+    size_t len = 0;
+    if (_wdupenv_s(&appData, &len, L"APPDATA") == 0 && appData && len > 0) {
+        std::filesystem::path dir = std::filesystem::path(appData) / L"Noise Mu6ix Studio" / L"WRECKAGE";
+        free(appData);
+        return dir / L"config.cfg";
+    }
+    if (appData) free(appData);
+#endif
+    return std::filesystem::path("wreckage_config.cfg");
+}
+
+void WreckageController::loadGlobalConfig() {
+    std::error_code ec;
+    auto cfgPath = getGlobalConfigPath();
+    if (!std::filesystem::exists(cfgPath, ec)) return;
+    std::ifstream f(cfgPath, std::ios::binary);
+    if (!f.is_open()) return;
+    std::string line;
+    while (std::getline(f, line)) {
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        auto eq = line.find('=');
+        if (eq == std::string::npos) continue;
+        std::string k = line.substr(0, eq);
+        std::string v = line.substr(eq + 1);
+        if (k == "rootLibraryDir" && !v.empty()) {
+            rootLibraryDir_ = utf8ToWide(v);
+        } else if (k == "themeIndex") {
+            int th = std::clamp(std::atoi(v.c_str()), 0, kNumThemes - 1);
+            setParamNormalized(kParamThemeIndex, th / 9.0);
+        } else if (k == "zoomIndex") {
+            int z = std::clamp(std::atoi(v.c_str()), 0, 2);
+            setParamNormalized(kParamUiZoom, z * 0.5);
+        }
+    }
+}
+
+void WreckageController::saveGlobalConfig() {
+    std::error_code ec;
+    auto cfgPath = getGlobalConfigPath();
+    std::filesystem::create_directories(cfgPath.parent_path(), ec);
+    std::ofstream f(cfgPath, std::ios::binary | std::ios::trunc);
+    if (!f.is_open()) return;
+    int th = std::clamp(static_cast<int>(std::round(getParamNormalized(kParamThemeIndex) * 9.0)), 0, kNumThemes - 1);
+    int z  = std::clamp(static_cast<int>(std::round(getParamNormalized(kParamUiZoom) * 2.0)), 0, 2);
+    f << "rootLibraryDir=" << wideToUtf8(rootLibraryDir_) << "\n";
+    f << "themeIndex=" << th << "\n";
+    f << "zoomIndex=" << z << "\n";
 }
 
 WreckageController::WreckageController() {
@@ -121,6 +175,7 @@ tresult PLUGIN_API WreckageController::initialize(FUnknown* context) {
     addRange(kParamThemeIndex, STR16("UI Theme"), 0.0, 9);
     addRange(kParamUiZoom,     STR16("UI Zoom"),  1.0, 2);
 
+    loadGlobalConfig();
     return kResultOk;
 }
 
@@ -130,7 +185,7 @@ tresult PLUGIN_API WreckageController::setComponentState(IBStream* state) {
     if (!state) return kResultFalse;
     IBStreamer s(state, kLittleEndian);
     int32 ver = 0;
-    if (!s.readInt32(ver) || (ver < 6 || ver > 8)) return kResultFalse;
+    if (!s.readInt32(ver) || (ver < 6 || ver > 9)) return kResultFalse;
 
     float f = 0.0f; int8 b = 0; int32 iv = 0;
     for (int i = 0; i < 4; ++i) {
@@ -261,12 +316,15 @@ tresult PLUGIN_API WreckageController::notify(IMessage* message) {
         const void* ptr = nullptr; uint32 sz = 0;
         if (attrs->getBinary("nameUtf8", ptr, sz) == kResultOk && ptr && sz > 0)
             m.name.assign(static_cast<const char*>(ptr), sz);
+        ++uiDirtySeq_;
         return kResultOk;
     }
     if (strcmp(mid, "WaveUpdated") == 0) {
         int64 sl = 0, vl = 0, rr = 0;
         double st = 0.0, en = 1.0, fi = 0.0, fo = 0.0;
+        int64 focus = 0;
         attrs->getInt("slot", sl); attrs->getInt("velLayer", vl); attrs->getInt("rr", rr);
+        attrs->getInt("focus", focus);
         attrs->getFloat("start", st); attrs->getFloat("end", en);
         attrs->getFloat("fadeIn", fi); attrs->getFloat("fadeOut", fo);
         auto& m = slotMirror(static_cast<int>(sl));
@@ -282,6 +340,13 @@ tresult PLUGIN_API WreckageController::notify(IMessage* message) {
             if (attrs->getBinary("peaks", ptr, sz) == kResultOk && ptr && sz == sizeof(float) * kWavePeakBins) {
                 std::memcpy(wi.peaks.data(), ptr, sz);
             }
+            if (focus != 0) {
+                waveFocusSlot_ = static_cast<int>(sl);
+                waveFocusVel_ = vIdx;
+                waveFocusRR_ = rIdx;
+                ++waveFocusSeq_;
+            }
+            ++uiDirtySeq_;
         }
         return kResultOk;
     }
@@ -332,6 +397,13 @@ tresult PLUGIN_API WreckageController::notify(IMessage* message) {
         return kResultOk;
     }
     if (strcmp(mid, "PresetPathUpdated") == 0) {
+        int64 clr = 0;
+        if (attrs->getInt("clear", clr) == kResultOk && clr != 0) {
+            lastSavedNm6Path_.clear();
+            activePresetName_ = "DEFAULT";
+            ++uiDirtySeq_;
+            return kResultOk;
+        }
         const void* ptr = nullptr; uint32 sz = 0;
         if (attrs->getBinary("pathUtf8", ptr, sz) == kResultOk && ptr && sz > 0) {
             std::string u8(static_cast<const char*>(ptr), sz);
@@ -339,7 +411,73 @@ tresult PLUGIN_API WreckageController::notify(IMessage* message) {
             std::filesystem::path fp(lastSavedNm6Path_);
             std::string stem = wideToUtf8(fp.stem().wstring());
             if (!stem.empty()) activePresetName_ = stem;
+            ++uiDirtySeq_;
         }
+        return kResultOk;
+    }
+    if (strcmp(mid, "ParamsSync") == 0) {
+        const void* ptr = nullptr; uint32 sz = 0;
+        if (attrs->getBinary("busGain", ptr, sz) == kResultOk && ptr && sz == sizeof(float) * 4) {
+            const float* bg = static_cast<const float*>(ptr);
+            for (int i = 0; i < 4; ++i) {
+                float db = 20.0f * std::log10(std::max(1e-6f, bg[i]));
+                setParamNormalized(kParamBusCloseGain + i, gainDbToNorm(db));
+            }
+        }
+        if (attrs->getBinary("busBypass", ptr, sz) == kResultOk && ptr && sz == sizeof(int32) * 4) {
+            const int32* bb = static_cast<const int32*>(ptr);
+            for (int i = 0; i < 4; ++i) setParamNormalized(kParamBusCloseBypass + i, bb[i] ? 1.0 : 0.0);
+        }
+        int64 iv = 0; double dv = 0.0;
+        auto getI = [&](const char* k, ParamID id, double scale = 1.0) {
+            if (attrs->getInt(k, iv) == kResultOk) setParamNormalized(id, std::clamp(static_cast<double>(iv) * scale, 0.0, 1.0));
+        };
+        getI("globalFakeMic", kParamGlobalFakeMic);
+        getI("filterOn", kParamFilterOn); getI("filterType", kParamFilterType, 1.0 / 7.0);
+        if (attrs->getFloat("filterCutoff", dv) == kResultOk)
+            setParamNormalized(kParamFilterCutoff, std::clamp(std::log(std::max(20.0, dv) / 20.0) / std::log(1000.0), 0.0, 1.0));
+        if (attrs->getFloat("filterRes", dv) == kResultOk) setParamNormalized(kParamFilterRes, std::clamp(dv, 0.0, 1.0));
+
+        getI("eqOn", kParamEqOn);
+        if (attrs->getFloat("eqLowFreq", dv) == kResultOk) setParamNormalized(kParamEqLowFreq, std::clamp((dv - 30.0) / 270.0, 0.0, 1.0));
+        if (attrs->getFloat("eqLowGain", dv) == kResultOk) setParamNormalized(kParamEqLowGain, std::clamp(dv / 24.0 + 0.5, 0.0, 1.0));
+        if (attrs->getFloat("eqMidFreq", dv) == kResultOk) setParamNormalized(kParamEqMidFreq, std::clamp((dv - 250.0) / 3750.0, 0.0, 1.0));
+        if (attrs->getFloat("eqMidGain", dv) == kResultOk) setParamNormalized(kParamEqMidGain, std::clamp(dv / 24.0 + 0.5, 0.0, 1.0));
+        if (attrs->getFloat("eqHighFreq", dv) == kResultOk) setParamNormalized(kParamEqHighFreq, std::clamp((dv - 2500.0) / 13500.0, 0.0, 1.0));
+        if (attrs->getFloat("eqHighGain", dv) == kResultOk) setParamNormalized(kParamEqHighGain, std::clamp(dv / 24.0 + 0.5, 0.0, 1.0));
+
+        getI("compOn", kParamCompOn);
+        if (attrs->getFloat("compThresh", dv) == kResultOk) setParamNormalized(kParamCompThresh, std::clamp((dv + 36.0) / 36.0, 0.0, 1.0));
+        if (attrs->getFloat("compRatio", dv) == kResultOk) setParamNormalized(kParamCompRatio, std::clamp((dv - 1.0) / 11.0, 0.0, 1.0));
+        if (attrs->getFloat("compAttack", dv) == kResultOk) setParamNormalized(kParamCompAttack, std::clamp((dv - 0.5) / 79.5, 0.0, 1.0));
+        if (attrs->getFloat("compRelease", dv) == kResultOk) setParamNormalized(kParamCompRelease, std::clamp((dv - 15.0) / 385.0, 0.0, 1.0));
+        if (attrs->getFloat("compKnee", dv) == kResultOk) setParamNormalized(kParamCompKnee, std::clamp(dv / 12.0, 0.0, 1.0));
+        if (attrs->getFloat("compMakeup", dv) == kResultOk) setParamNormalized(kParamCompMakeup, std::clamp(dv / 24.0 + 0.5, 0.0, 1.0));
+
+        getI("satOn", kParamSatOn); getI("satMode", kParamSatMode, 1.0 / 3.0);
+        if (attrs->getFloat("satDrive", dv) == kResultOk) setParamNormalized(kParamSatDrive, std::clamp(dv, 0.0, 1.0));
+        if (attrs->getFloat("satWarmth", dv) == kResultOk) setParamNormalized(kParamSatWarmth, std::clamp(dv, 0.0, 1.0));
+        if (attrs->getFloat("satMix", dv) == kResultOk) setParamNormalized(kParamSatMix, std::clamp(dv, 0.0, 1.0));
+
+        getI("delayOn", kParamDelayOn); getI("delayMode", kParamDelayMode, 0.5);
+        if (attrs->getFloat("delayTime", dv) == kResultOk) setParamNormalized(kParamDelayTime, std::clamp((dv - 20.0) / 780.0, 0.0, 1.0));
+        if (attrs->getFloat("delayFeedback", dv) == kResultOk) setParamNormalized(kParamDelayFeedback, std::clamp(dv / 0.88, 0.0, 1.0));
+        if (attrs->getFloat("delayTone", dv) == kResultOk) setParamNormalized(kParamDelayTone, std::clamp(dv, 0.0, 1.0));
+        if (attrs->getFloat("delayWidth", dv) == kResultOk) setParamNormalized(kParamDelayWidth, std::clamp(dv, 0.0, 1.0));
+        if (attrs->getFloat("delayMix", dv) == kResultOk) setParamNormalized(kParamDelayMix, std::clamp(dv, 0.0, 1.0));
+
+        getI("revOn", kParamRevOn); getI("revMode", kParamRevMode, 0.5);
+        if (attrs->getFloat("revPreDelay", dv) == kResultOk) setParamNormalized(kParamRevPreDelay, std::clamp(dv / 120.0, 0.0, 1.0));
+        if (attrs->getFloat("revDecay", dv) == kResultOk) setParamNormalized(kParamRevDecay, std::clamp((dv - 0.2) / 5.8, 0.0, 1.0));
+        if (attrs->getFloat("revSize", dv) == kResultOk) setParamNormalized(kParamRevSize, std::clamp(dv, 0.0, 1.0));
+        if (attrs->getFloat("revLowCut", dv) == kResultOk) setParamNormalized(kParamRevLowCut, std::clamp((dv - 20.0) / 480.0, 0.0, 1.0));
+        if (attrs->getFloat("revHighCut", dv) == kResultOk) setParamNormalized(kParamRevHighCut, std::clamp((dv - 1500.0) / 16500.0, 0.0, 1.0));
+        if (attrs->getFloat("revMix", dv) == kResultOk) setParamNormalized(kParamRevMix, std::clamp(dv, 0.0, 1.0));
+
+        getI("limiterOn", kParamLimiterOn); getI("monoBass", kParamMonoBass);
+        getI("punishOn", kParamPunishOn); getI("punishMode", kParamPunishMode, 0.5);
+        if (attrs->getFloat("punishAmount", dv) == kResultOk) setParamNormalized(kParamPunishAmount, std::clamp(dv, 0.0, 1.0));
+        ++uiDirtySeq_;
         return kResultOk;
     }
     if (strcmp(mid, "SaveDone") == 0) {
@@ -356,6 +494,10 @@ void WreckageController::uiSetParam(ParamID id, double normVal, bool beginEnd) {
     setParamNormalized(id, normVal);
     performEdit(id, normVal);
     if (beginEnd) endEdit(id);
+    if (id == kParamThemeIndex || id == kParamUiZoom) {
+        saveGlobalConfig();
+    }
+    ++uiDirtySeq_;
 }
 
 void WreckageController::uiTriggerNote(int midiNote, float vel, bool isOn) {
@@ -386,6 +528,9 @@ void WreckageController::uiPanic() {
 }
 
 void WreckageController::uiResetKit() {
+    lastSavedNm6Path_.clear();
+    activePresetName_ = "DEFAULT";
+    ++uiDirtySeq_;
     if (auto* msg = allocateMessage()) { msg->setMessageID("ResetKit"); sendMessage(msg); msg->release(); }
 }
 

@@ -29,15 +29,17 @@ public:
 private:
     void applyNormalizedParam(Steinberg::Vst::ParamID id, Steinberg::Vst::ParamValue val);
     void broadcastSlotSummaryToUi(int slotIdx);
-    void broadcastWaveDataToUi(int slotIdx, int velLayerIdx, int rrIdx);
+    void broadcastWaveDataToUi(int slotIdx, int velLayerIdx, int rrIdx, bool focus = false);
     void broadcastTelemetryToUi();
     void broadcastPresetPathToUi();
+    void broadcastParamsSyncToUi();
 
     WreckageEngine engine_;
     double sampleRate_ = 44100.0;
     float cpuLoadPct_ = 0.0f;
     int selectedUiSlot_ = 0;
     int telemetrySampleAccum_ = 0;
+    bool sentIdleTelemetry_ = false;
     int lastMidiNote_ = -1;
     uint32_t midiNoteSeq_ = 0;
     uint64_t midiHitPulseLo_ = 0;

@@ -227,9 +227,19 @@ tresult PLUGIN_API WreckageProcessor::process(ProcessData& data) {
     }
 
     telemetrySampleAccum_ += data.numSamples;
-    if (hadMidiEvent || telemetrySampleAccum_ >= static_cast<int>(sampleRate_ * 0.032)) {
+    if (hadMidiEvent) {
         telemetrySampleAccum_ = 0;
+        sentIdleTelemetry_ = false;
         broadcastTelemetryToUi();
+    } else if (telemetrySampleAccum_ >= static_cast<int>(sampleRate_ * 0.040)) {
+        telemetrySampleAccum_ = 0;
+        if (!engine_.isIdleSleeping()) {
+            sentIdleTelemetry_ = false;
+            broadcastTelemetryToUi();
+        } else if (!sentIdleTelemetry_) {
+            sentIdleTelemetry_ = true;
+            broadcastTelemetryToUi();
+        }
     }
     return kResultOk;
 }
@@ -238,7 +248,7 @@ tresult PLUGIN_API WreckageProcessor::setState(IBStream* state) {
     if (!state) return kResultFalse;
     IBStreamer s(state, kLittleEndian);
     int32 ver = 0;
-    if (!s.readInt32(ver) || (ver < 6 || ver > 8)) return kResultFalse;
+    if (!s.readInt32(ver) || (ver < 6 || ver > 9)) return kResultFalse;
 
     auto& p = engine_.params();
     auto& fx = p.fx;
@@ -302,6 +312,37 @@ tresult PLUGIN_API WreckageProcessor::setState(IBStream* state) {
                 s.readFloat(sl.stageY);
             }
         }
+        if (ver >= 9) {
+            int32 wavCount = 0;
+            if (s.readInt32(wavCount) && wavCount > 0 && wavCount < 8192) {
+                for (int w = 0; w < wavCount; ++w) {
+                    int32 sIdx = 0, vl = 0, rr = 0, mic = 0, pLen = 0;
+                    float st = 0.0f, en = 1.0f, fi = 0.0f, fo = 0.0f;
+                    s.readInt32(sIdx); s.readInt32(vl); s.readInt32(rr); s.readInt32(mic);
+                    s.readFloat(st); s.readFloat(en); s.readFloat(fi); s.readFloat(fo);
+                    s.readInt32(pLen);
+                    std::string pU8;
+                    if (pLen > 0 && pLen < 4096) {
+                        pU8.resize(static_cast<size_t>(pLen));
+                        s.readRaw(&pU8[0], pLen);
+                        bool alreadyLoaded = false;
+                        if (sIdx >= 0 && sIdx < kTotalSlots && vl >= 0 && vl < kMaxVelLayers) {
+                            const auto& rrs = engine_.slot(sIdx).velLayers[vl].rrs;
+                            if (rr >= 0 && rr < static_cast<int>(rrs.size()) && mic >= 0 && mic < 4) {
+                                alreadyLoaded = (rrs[static_cast<size_t>(rr)].mics[static_cast<size_t>(mic)] != nullptr);
+                            }
+                        }
+                        if (!alreadyLoaded) {
+                            std::error_code ec;
+                            auto wp = pathFromUtf8(pU8);
+                            if (std::filesystem::exists(wp, ec)) {
+                                engine_.reloadWavIntoExactLocation(sIdx, vl, rr, mic, wp, pU8, st, en, fi, fo);
+                            }
+                        }
+                    }
+                }
+            }
+        }
         for (int i = 0; i < kTotalSlots; ++i) {
             broadcastSlotSummaryToUi(i);
             for (int vl = 0; vl < kMaxVelLayers; ++vl) {
@@ -318,7 +359,7 @@ tresult PLUGIN_API WreckageProcessor::setState(IBStream* state) {
 tresult PLUGIN_API WreckageProcessor::getState(IBStream* state) {
     if (!state) return kResultFalse;
     IBStreamer s(state, kLittleEndian);
-    s.writeInt32(8);
+    s.writeInt32(9);
 
     const auto& p = engine_.params();
     const auto& fx = p.fx;
@@ -369,6 +410,33 @@ tresult PLUGIN_API WreckageProcessor::getState(IBStream* state) {
         s.writeFloat(sl.stageX);
         s.writeFloat(sl.stageY);
     }
+
+    // Ver 9: Persist direct .wav source paths for FL Studio .flp recall without .nm6
+    struct WavRec { int32 sIdx, vl, rr, mic; float st, en, fi, fo; std::string path; };
+    std::vector<WavRec> wavRecs;
+    for (int i = 0; i < kTotalSlots; ++i) {
+        const auto& sl = engine_.slot(i);
+        for (int vl = 0; vl < kMaxVelLayers; ++vl) {
+            const auto& rrs = sl.velLayers[vl].rrs;
+            for (int r = 0; r < static_cast<int>(rrs.size()); ++r) {
+                const auto& it = rrs[static_cast<size_t>(r)];
+                for (int m = 0; m < 4; ++m) {
+                    if (it.mics[static_cast<size_t>(m)] && !it.sourcePathsUtf8[static_cast<size_t>(m)].empty()) {
+                        wavRecs.push_back({ i, vl, r, m, it.startNorm, it.endNorm, it.fadeInNorm, it.fadeOutNorm,
+                                            it.sourcePathsUtf8[static_cast<size_t>(m)] });
+                    }
+                }
+            }
+        }
+    }
+    s.writeInt32(static_cast<int32>(wavRecs.size()));
+    for (const auto& wr : wavRecs) {
+        s.writeInt32(wr.sIdx); s.writeInt32(wr.vl); s.writeInt32(wr.rr); s.writeInt32(wr.mic);
+        s.writeFloat(wr.st); s.writeFloat(wr.en); s.writeFloat(wr.fi); s.writeFloat(wr.fo);
+        int32 pLen = static_cast<int32>(wr.path.size());
+        s.writeInt32(pLen);
+        if (pLen > 0) s.writeRaw(wr.path.data(), pLen);
+    }
     return kResultOk;
 }
 
@@ -405,7 +473,7 @@ void WreckageProcessor::broadcastSlotSummaryToUi(int slotIdx) {
     }
 }
 
-void WreckageProcessor::broadcastWaveDataToUi(int slotIdx, int velLayerIdx, int rrIdx) {
+void WreckageProcessor::broadcastWaveDataToUi(int slotIdx, int velLayerIdx, int rrIdx, bool focus) {
     const auto& sl = engine_.slot(slotIdx);
     int vl = std::clamp(velLayerIdx, 0, kMaxVelLayers - 1);
     const auto& rrs = sl.velLayers[vl].rrs;
@@ -420,6 +488,7 @@ void WreckageProcessor::broadcastWaveDataToUi(int slotIdx, int velLayerIdx, int 
         attrs->setInt("slot", slotIdx);
         attrs->setInt("velLayer", vl);
         attrs->setInt("rr", rrIdx);
+        attrs->setInt("focus", focus ? 1 : 0);
         attrs->setFloat("start", it.startNorm);
         attrs->setFloat("end", it.endNorm);
         attrs->setFloat("fadeIn", it.fadeInNorm);
@@ -475,10 +544,60 @@ void WreckageProcessor::broadcastTelemetryToUi() {
 }
 
 void WreckageProcessor::broadcastPresetPathToUi() {
-    if (lastNm6PathUtf8_.empty()) return;
     if (auto* msg = allocateMessage()) {
         msg->setMessageID("PresetPathUpdated");
-        msg->getAttributes()->setBinary("pathUtf8", lastNm6PathUtf8_.data(), static_cast<uint32>(lastNm6PathUtf8_.size()));
+        if (!lastNm6PathUtf8_.empty()) {
+            msg->getAttributes()->setBinary("pathUtf8", lastNm6PathUtf8_.data(), static_cast<uint32>(lastNm6PathUtf8_.size()));
+        } else {
+            msg->getAttributes()->setInt("clear", 1);
+        }
+        sendMessage(msg);
+        msg->release();
+    }
+}
+
+void WreckageProcessor::broadcastParamsSyncToUi() {
+    if (auto* msg = allocateMessage()) {
+        msg->setMessageID("ParamsSync");
+        auto* a = msg->getAttributes();
+        const auto& p = engine_.params();
+        const auto& fx = p.fx;
+        float bg[4] = { p.busGain[0], p.busGain[1], p.busGain[2], p.busGain[3] };
+        int32 bb[4] = { p.busBypass[0] ? 1 : 0, p.busBypass[1] ? 1 : 0, p.busBypass[2] ? 1 : 0, p.busBypass[3] ? 1 : 0 };
+        a->setBinary("busGain", bg, sizeof(bg));
+        a->setBinary("busBypass", bb, sizeof(bb));
+        a->setInt("globalFakeMic", p.globalFakeMic ? 1 : 0);
+
+        a->setInt("filterOn", fx.filterOn ? 1 : 0); a->setInt("filterType", fx.filterType);
+        a->setFloat("filterCutoff", fx.filterCutoffHz); a->setFloat("filterRes", fx.filterRes);
+
+        a->setInt("eqOn", fx.eqOn ? 1 : 0);
+        a->setFloat("eqLowFreq", fx.eqLowFreq); a->setFloat("eqLowGain", fx.eqLowGain);
+        a->setFloat("eqMidFreq", fx.eqMidFreq); a->setFloat("eqMidGain", fx.eqMidGain);
+        a->setFloat("eqHighFreq", fx.eqHighFreq); a->setFloat("eqHighGain", fx.eqHighGain);
+
+        a->setInt("compOn", fx.compOn ? 1 : 0);
+        a->setFloat("compThresh", fx.compThreshDb); a->setFloat("compRatio", fx.compRatio);
+        a->setFloat("compAttack", fx.compAttackMs); a->setFloat("compRelease", fx.compReleaseMs);
+        a->setFloat("compKnee", fx.compKneeDb); a->setFloat("compMakeup", fx.compMakeupDb);
+
+        a->setInt("satOn", fx.satOn ? 1 : 0); a->setInt("satMode", fx.satMode);
+        a->setFloat("satDrive", fx.satDrive); a->setFloat("satWarmth", fx.satWarmth); a->setFloat("satMix", fx.satMix);
+
+        a->setInt("delayOn", fx.delayOn ? 1 : 0); a->setInt("delayMode", fx.delayMode);
+        a->setFloat("delayTime", fx.delayTimeMs); a->setFloat("delayFeedback", fx.delayFeedback);
+        a->setFloat("delayTone", fx.delayTone); a->setFloat("delayWidth", fx.delayWidth); a->setFloat("delayMix", fx.delayMix);
+
+        a->setInt("revOn", fx.revOn ? 1 : 0); a->setInt("revMode", fx.revMode);
+        a->setFloat("revPreDelay", fx.revPreDelayMs); a->setFloat("revDecay", fx.revDecaySec);
+        a->setFloat("revSize", fx.revSize); a->setFloat("revLowCut", fx.revLowCutHz);
+        a->setFloat("revHighCut", fx.revHighCutHz); a->setFloat("revMix", fx.revMix);
+
+        a->setInt("limiterOn", fx.limiterOn ? 1 : 0);
+        a->setInt("monoBass", fx.monoBass ? 1 : 0);
+        a->setInt("punishOn", fx.punishOn ? 1 : 0);
+        a->setFloat("punishAmount", fx.punishAmount);
+        a->setInt("punishMode", static_cast<int64>(fx.punishMode));
         sendMessage(msg);
         msg->release();
     }
@@ -523,7 +642,9 @@ tresult PLUGIN_API WreckageProcessor::notify(IMessage* message) {
     }
     if (strcmp(id, "ResetKit") == 0) {
         engine_.resetKit();
+        lastNm6PathUtf8_.clear();
         for (int i = 0; i < kTotalSlots; ++i) broadcastSlotSummaryToUi(i);
+        broadcastPresetPathToUi();
         broadcastTelemetryToUi();
         return kResultOk;
     }
@@ -593,6 +714,9 @@ tresult PLUGIN_API WreckageProcessor::notify(IMessage* message) {
                 if (!s.oneShot && s.releaseMs >= 3800.0f) {
                     s.releaseMs = 120.0f;
                     broadcastSlotSummaryToUi(static_cast<int>(sl));
+                } else if (s.oneShot && s.releaseMs <= 150.0f) {
+                    s.releaseMs = 4000.0f;
+                    broadcastSlotSummaryToUi(static_cast<int>(sl));
                 }
                 break;
             case 6: s.chokeGroup = static_cast<int>(ival); break;
@@ -637,9 +761,9 @@ tresult PLUGIN_API WreckageProcessor::notify(IMessage* message) {
             std::string u8(static_cast<const char*>(ptr), sz);
             int sIdx = static_cast<int>(sl);
             int loadedVl = 0, loadedRR = 0;
-            if (engine_.loadSampleIntoSlot(sIdx, pathFromUtf8(u8), static_cast<int>(prefVl), &loadedVl, &loadedRR)) {
+            if (engine_.loadSampleIntoSlot(sIdx, pathFromUtf8(u8), static_cast<int>(prefVl), &loadedVl, &loadedRR, u8)) {
                 broadcastSlotSummaryToUi(sIdx);
-                broadcastWaveDataToUi(sIdx, loadedVl, loadedRR);
+                broadcastWaveDataToUi(sIdx, loadedVl, loadedRR, true);
                 broadcastTelemetryToUi();
             }
         }
@@ -665,8 +789,10 @@ tresult PLUGIN_API WreckageProcessor::notify(IMessage* message) {
         const void* ptr = nullptr; uint32 sz = 0;
         if (attrs->getBinary("pathUtf8", ptr, sz) == kResultOk && ptr && sz > 0) {
             std::string u8(static_cast<const char*>(ptr), sz);
-            if (engine_.loadKitFromNm6(pathFromUtf8(u8))) {
+            bool hasMix = false;
+            if (engine_.loadKitFromNm6(pathFromUtf8(u8), &hasMix)) {
                 lastNm6PathUtf8_ = u8;
+                if (hasMix) broadcastParamsSyncToUi();
                 for (int i = 0; i < kTotalSlots; ++i) {
                     broadcastSlotSummaryToUi(i);
                     for (int vl = 0; vl < kMaxVelLayers; ++vl) {
@@ -674,6 +800,7 @@ tresult PLUGIN_API WreckageProcessor::notify(IMessage* message) {
                         for (int r = 0; r < nr; ++r) broadcastWaveDataToUi(i, vl, r);
                     }
                 }
+                broadcastPresetPathToUi();
                 broadcastTelemetryToUi();
             }
         }

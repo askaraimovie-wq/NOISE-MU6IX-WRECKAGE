@@ -11,6 +11,7 @@
 #include "wreckage_controller.h"
 #include <vector>
 #include <string>
+#include <unordered_map>
 
 namespace NoiseMu6ix {
 
@@ -74,6 +75,7 @@ private:
     IDWriteFactory* dwFactory_ = nullptr;
     ID2D1HwndRenderTarget* rt_ = nullptr;
     ID2D1SolidColorBrush* brush_ = nullptr;
+    std::unordered_map<uint32_t, IDWriteTextFormat*> textFormats_;
 
     int activeTab_ = 1;          // Default 1 = STAGE & MIX
     int activeFxModule_ = 0;     // 0:FILTER, 1:EQ, 2:COMP, 3:SAT, 4:DELAY, 5:REVERB
@@ -89,11 +91,17 @@ private:
     int activePressedNote_ = -1;
     uint32_t lastSeenMidiSeq_ = 0;
     uint32_t lastSeenVoiceSeq_ = 0;
+    uint32_t lastSeenWaveFocusSeq_ = 0;
+    uint32_t lastSeenDirtySeq_ = 0;
+    float lastDrawnOutLvl_ = -1.0f;
+    float lastDrawnPlayhead_ = -2.0f;
+    int lastDrawnVoices_ = -1;
+    bool hadActivePulses_ = false;
     int dragTarget_ = 0;
 
     std::vector<std::wstring> browserCategories_;
     std::vector<std::wstring> browserItems_;
-    int selectedCategory_ = -1;
+    int selectedCategory_ = 0;
     int browserCatScroll_ = 0;
     int browserItemScroll_ = 0;
 

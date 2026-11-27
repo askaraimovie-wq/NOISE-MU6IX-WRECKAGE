@@ -2,6 +2,7 @@
 #include "public.sdk/source/vst/vsteditcontroller.h"
 #include "../core/wreckage_params.h"
 #include "../core/wreckage_themes.h"
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <string>
@@ -87,8 +88,10 @@ public:
     void uiLoadWavFile(int slotIdx, const std::wstring& widePath, int prefVelLayer = -1);
     void uiExportNm6File(const std::wstring& widePath);
     void uiLoadNm6File(const std::wstring& widePath);
+    void loadGlobalConfig();
+    void saveGlobalConfig();
 
-    UiSlotMirror& slotMirror(int idx) { return slots_[idx % kTotalSlots]; }
+    UiSlotMirror& slotMirror(int idx) { return slots_[std::clamp(idx, 0, kTotalSlots - 1)]; }
     std::wstring& rootLibraryDir() { return rootLibraryDir_; }
     std::wstring& lastSavedNm6Path() { return lastSavedNm6Path_; }
     std::string& activePresetName() { return activePresetName_; }
@@ -107,6 +110,11 @@ public:
     int liveVoiceVel() const { return liveVoiceVel_; }
     int liveVoiceRR() const { return liveVoiceRR_; }
     uint32_t liveVoiceSeq() const { return liveVoiceSeq_; }
+    uint32_t waveFocusSeq() const { return waveFocusSeq_; }
+    int waveFocusSlot() const { return waveFocusSlot_; }
+    int waveFocusVel() const { return waveFocusVel_; }
+    int waveFocusRR() const { return waveFocusRR_; }
+    uint32_t uiDirtySeq() const { return uiDirtySeq_; }
     bool isNotePulsing(int note) const {
         return (note >= 0 && note < 128) && (notePulseTicks_[static_cast<size_t>(note)] > 0);
     }
@@ -143,6 +151,11 @@ private:
     int liveVoiceVel_ = -1;
     int liveVoiceRR_ = -1;
     uint32_t liveVoiceSeq_ = 0;
+    uint32_t waveFocusSeq_ = 0;
+    int waveFocusSlot_ = -1;
+    int waveFocusVel_ = 0;
+    int waveFocusRR_ = 0;
+    uint32_t uiDirtySeq_ = 0;
     std::array<int, 128> notePulseTicks_{};
     uint64_t notesLo_ = 0;
     uint64_t notesHi_ = 0;
