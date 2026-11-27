@@ -165,6 +165,33 @@ int main() {
     assert(eng2.params().fx.delayMode == 1);
     assert(eng2.params().fx.punishOn && std::fabs(eng2.params().fx.punishAmount - 0.42f) < 0.01f);
     assert(!eng2.params().busBypass[1]);
+
+    // 7b. Verify loadKitFromNm6(..., loadMixParams=false) preserves song-specific Mix/FX/PUNISH (DAW setState recall)
+    WreckageEngine eng3;
+    eng3.params().fx.punishOn = false;
+    eng3.params().fx.punishAmount = 0.0f;
+    eng3.params().fx.filterOn = false;
+    eng3.params().busBypass[1] = true;
+    assert(eng3.loadKitFromNm6(tmpNm6, &hasMix, false));
+    assert(!hasMix);
+    assert(!eng3.params().fx.punishOn && std::fabs(eng3.params().fx.punishAmount) < 1e-4f);
+    assert(!eng3.params().fx.filterOn && eng3.params().busBypass[1]);
+
+    // 7c. Verify short-sample trim bounds safety (8 frames with startNorm=0.98)
+    auto tiny = std::make_shared<AudioBuffer>();
+    tiny->sampleRate = 44100;
+    tiny->left.assign(8, 0.5f);
+    tiny->right.assign(8, 0.5f);
+    eng3.prepare(44100.0);
+    eng3.slot(2).midiNote = 50;
+    eng3.slot(2).velLayers[0].rrs.resize(1);
+    eng3.slot(2).velLayers[0].rrs[0].mics[0] = tiny;
+    eng3.slot(2).velLayers[0].rrs[0].startNorm = 0.98f;
+    eng3.slot(2).velLayers[0].rrs[0].endNorm = 1.0f;
+    eng3.triggerNoteOn(50, 0.9f);
+    eng3.process(pb);
+    for (int i = 0; i < 256; ++i) assert(std::isfinite(mainL[i]) && std::isfinite(mainR[i]));
+
     std::filesystem::remove(tmpNm6);
 
     // 8. CPU Benchmark (1000 blocks of 256 samples = 5.8 sec audio with 4 active voices)
