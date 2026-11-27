@@ -31,6 +31,7 @@ public:
     void commitInlineRename();
     void cancelInlineRename();
     float uiScale() const { return uiScale_; }
+    void syncScaleFromBounds(float w, float h);
 
 private:
     void requestRepaint();

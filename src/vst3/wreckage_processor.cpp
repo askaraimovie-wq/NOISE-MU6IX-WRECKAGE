@@ -273,6 +273,8 @@ tresult PLUGIN_API WreckageProcessor::setState(IBStream* state) {
     s.readInt32(p.themeIndex);
     s.readInt32(p.zoomIndex);
     if (ver >= 7) {
+        engine_.resetKit();
+        lastNm6PathUtf8_.clear();
         int32 pathLen = 0;
         if (s.readInt32(pathLen) && pathLen > 0 && pathLen < 4096) {
             lastNm6PathUtf8_.resize(static_cast<size_t>(pathLen));
@@ -280,7 +282,7 @@ tresult PLUGIN_API WreckageProcessor::setState(IBStream* state) {
             std::error_code ec;
             auto pPath = pathFromUtf8(lastNm6PathUtf8_);
             if (std::filesystem::exists(pPath, ec)) {
-                engine_.loadKitFromNm6(pPath);
+                engine_.loadKitFromNm6(pPath, nullptr, false);
             }
         }
         int32 nSlots = 0;

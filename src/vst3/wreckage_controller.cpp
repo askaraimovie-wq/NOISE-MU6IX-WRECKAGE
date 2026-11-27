@@ -306,9 +306,13 @@ tresult PLUGIN_API WreckageController::setComponentState(IBStream* state) {
             lastSavedNm6Path_ = utf8ToWide(pU8);
             std::filesystem::path fp = std::filesystem::u8path(pU8);
             std::string stem = fp.stem().u8string();
-            if (!stem.empty()) activePresetName_ = stem;
+            activePresetName_ = stem.empty() ? "DEFAULT" : stem;
+        } else {
+            lastSavedNm6Path_.clear();
+            activePresetName_ = "DEFAULT";
         }
     }
+    ++uiDirtySeq_;
     return kResultOk;
 }
 
@@ -530,6 +534,7 @@ tresult PLUGIN_API WreckageController::notify(IMessage* message) {
         getI("limiterOn", kParamLimiterOn); getI("monoBass", kParamMonoBass);
         getI("punishOn", kParamPunishOn); getI("punishMode", kParamPunishMode, 0.5);
         if (attrs->getFloat("punishAmount", dv) == kResultOk) setParamNormalized(kParamPunishAmount, std::clamp(dv, 0.0, 1.0));
+        if (componentHandler) componentHandler->restartComponent(kParamValuesChanged);
         ++uiDirtySeq_;
         return kResultOk;
     }

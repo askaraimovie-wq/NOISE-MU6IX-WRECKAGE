@@ -45,6 +45,13 @@ using namespace Steinberg::Vst;
 - (BOOL)acceptsFirstResponder { return YES; }
 - (BOOL)acceptsFirstMouse:(NSEvent*)event { (void)event; return YES; }
 
+- (void)setFrameSize:(NSSize)newSize {
+    [super setFrameSize:newSize];
+    if (owner_) {
+        owner_->syncScaleFromBounds(static_cast<float>(newSize.width), static_cast<float>(newSize.height));
+    }
+}
+
 - (void)drawRect:(NSRect)dirtyRect {
     (void)dirtyRect;
     if (!owner_) return;
@@ -334,6 +341,11 @@ tresult PLUGIN_API WreckageMacView::removed() {
     return CPluginView::removed();
 }
 
+void WreckageMacView::syncScaleFromBounds(float w, float h) {
+    float minDim = std::max(200.0f, std::min(w, h));
+    uiScale_ = minDim / static_cast<float>(kBaseUiSize);
+}
+
 tresult PLUGIN_API WreckageMacView::onSize(ViewRect* newSize) {
     if (!newSize) return kInvalidArgument;
     CPluginView::onSize(newSize);
@@ -368,7 +380,7 @@ void WreckageMacView::drawText(const char* text, float x, float y, float w, floa
     if (!nsStr) return;
 
     NSMutableDictionary* cache = (__bridge NSMutableDictionary*)fontCacheRef_;
-    float macPt = std::max(6.5f, sizePt * 0.92f);
+    float macPt = std::max(6.5f, sizePt * 0.88f);
     uint32_t szKey = static_cast<uint32_t>(std::round(macPt * 10.0f));
     NSNumber* fKey = @((szKey << 1) | (bold ? 1u : 0u));
     NSFont* font = cache[fKey];
@@ -454,7 +466,7 @@ void WreckageMacView::drawHeader(void* ctxV, const ThemePalette& th) {
     cgStrokeRect(ctx, 14, 14, 38, 40, th.accent, 1.5f);
     drawText("N6", 14, 14, 38, 40, contrastTextMac(th.border), 16.0f, true, 1);
 
-    drawText("WRECKAGE", 58, 12, 166, 44, th.textPrimary, 30.0f, true, 0);
+    drawText("WRECKAGE", 58, 12, 174, 44, th.textPrimary, 29.0f, true, 0);
     drawText("v" WRECKAGE_VERSION_STR, 222, 34, 46, 18, th.textPrimary, 9.5f, true, 0);
 
     cgFillRect(ctx, 272, 12, 258, 44, th.panelBg);
@@ -1580,8 +1592,6 @@ void WreckageMacView::openExportNm6Dialog(bool forceSaveAs) {
     NSSavePanel* panel = [NSSavePanel savePanel];
     panel.nameFieldStringValue = @"MyKit.nm6";
     panel.allowsOtherFileTypes = YES;
-    UTType* nm6Type = [UTType typeWithFilenameExtension:@"nm6"];
-    if (nm6Type) panel.allowedContentTypes = @[nm6Type];
 
     if ([panel runModal] == NSModalResponseOK && panel.URL) {
         const char* p = panel.URL.path.UTF8String;
