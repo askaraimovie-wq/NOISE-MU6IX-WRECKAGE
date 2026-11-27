@@ -59,7 +59,7 @@ jobs:
           path: NOISE_MU6IX_WRECKAGE_v${{ steps.ver.outputs.version }}_Windows_x64.zip
 
   build-macos-vst3:
-    runs-on: macos-14
+    runs-on: macos-latest
 
     steps:
       - name: Checkout Repository
