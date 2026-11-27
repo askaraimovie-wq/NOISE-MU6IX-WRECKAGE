@@ -1,4 +1,6 @@
 build/
+build_arm64/
+build_x86_64/
 out/
 dist/
 third_party/
@@ -8,3 +10,4 @@ third_party/
 *.tmp
 .vs/
 .vscode/
+.DS_Store
