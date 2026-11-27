@@ -1,5 +1,9 @@
 #include "wreckage_controller.h"
+#ifdef _WIN32
 #include "wreckage_view_win.h"
+#elif defined(__APPLE__)
+#include "wreckage_view_mac.h"
+#endif
 #include "base/source/fstreamer.h"
 #include <algorithm>
 #include <cmath>
@@ -24,7 +28,29 @@ static std::wstring utf8ToWide(const std::string& s) {
     if (n > 1) MultiByteToWideChar(CP_UTF8, 0, s.c_str(), -1, &out[0], n);
     return out;
 #else
-    return std::wstring(s.begin(), s.end());
+    std::wstring out;
+    out.reserve(s.size());
+    size_t i = 0, n = s.size();
+    while (i < n) {
+        unsigned char c = static_cast<unsigned char>(s[i]);
+        uint32_t cp = 0;
+        if (c < 0x80) { cp = c; i += 1; }
+        else if ((c & 0xE0) == 0xC0 && i + 1 < n) {
+            cp = ((c & 0x1Fu) << 6) | (static_cast<unsigned char>(s[i + 1]) & 0x3Fu);
+            i += 2;
+        } else if ((c & 0xF0) == 0xE0 && i + 2 < n) {
+            cp = ((c & 0x0Fu) << 12) | ((static_cast<unsigned char>(s[i + 1]) & 0x3Fu) << 6) |
+                 (static_cast<unsigned char>(s[i + 2]) & 0x3Fu);
+            i += 3;
+        } else if ((c & 0xF8) == 0xF0 && i + 3 < n) {
+            cp = ((c & 0x07u) << 18) | ((static_cast<unsigned char>(s[i + 1]) & 0x3Fu) << 12) |
+                 ((static_cast<unsigned char>(s[i + 2]) & 0x3Fu) << 6) |
+                 (static_cast<unsigned char>(s[i + 3]) & 0x3Fu);
+            i += 4;
+        } else { cp = c; i += 1; }
+        out.push_back(static_cast<wchar_t>(cp));
+    }
+    return out;
 #endif
 }
 
@@ -36,7 +62,27 @@ static std::string wideToUtf8(const std::wstring& w) {
     if (n > 1) WideCharToMultiByte(CP_UTF8, 0, w.c_str(), -1, &out[0], n, nullptr, nullptr);
     return out;
 #else
-    return std::string(w.begin(), w.end());
+    std::string out;
+    out.reserve(w.size());
+    for (wchar_t wc : w) {
+        uint32_t cp = static_cast<uint32_t>(wc);
+        if (cp < 0x80) {
+            out.push_back(static_cast<char>(cp));
+        } else if (cp < 0x800) {
+            out.push_back(static_cast<char>(0xC0u | (cp >> 6)));
+            out.push_back(static_cast<char>(0x80u | (cp & 0x3Fu)));
+        } else if (cp < 0x10000) {
+            out.push_back(static_cast<char>(0xE0u | (cp >> 12)));
+            out.push_back(static_cast<char>(0x80u | ((cp >> 6) & 0x3Fu)));
+            out.push_back(static_cast<char>(0x80u | (cp & 0x3Fu)));
+        } else {
+            out.push_back(static_cast<char>(0xF0u | (cp >> 18)));
+            out.push_back(static_cast<char>(0x80u | ((cp >> 12) & 0x3Fu)));
+            out.push_back(static_cast<char>(0x80u | ((cp >> 6) & 0x3Fu)));
+            out.push_back(static_cast<char>(0x80u | (cp & 0x3Fu)));
+        }
+    }
+    return out;
 #endif
 }
 
@@ -50,6 +96,10 @@ static std::filesystem::path getGlobalConfigPath() {
         return dir / L"config.cfg";
     }
     if (appData) free(appData);
+#elif defined(__APPLE__)
+    if (const char* home = std::getenv("HOME")) {
+        return std::filesystem::path(home) / "Library" / "Application Support" / "Noise Mu6ix Studio" / "WRECKAGE" / "config.cfg";
+    }
 #endif
     return std::filesystem::path("wreckage_config.cfg");
 }
@@ -254,8 +304,9 @@ tresult PLUGIN_API WreckageController::setComponentState(IBStream* state) {
             std::string pU8(static_cast<size_t>(pathLen), '\0');
             s.readRaw(&pU8[0], pathLen);
             lastSavedNm6Path_ = utf8ToWide(pU8);
-            std::filesystem::path fp(lastSavedNm6Path_);
-            activePresetName_ = wideToUtf8(fp.stem().wstring());
+            std::filesystem::path fp = std::filesystem::u8path(pU8);
+            std::string stem = fp.stem().u8string();
+            if (!stem.empty()) activePresetName_ = stem;
         }
     }
     return kResultOk;
@@ -264,6 +315,8 @@ tresult PLUGIN_API WreckageController::setComponentState(IBStream* state) {
 IPlugView* PLUGIN_API WreckageController::createView(FIDString name) {
 #ifdef _WIN32
     if (FIDStringsEqual(name, ViewType::kEditor)) return new WreckageWinView(this);
+#elif defined(__APPLE__)
+    if (FIDStringsEqual(name, ViewType::kEditor)) return new WreckageMacView(this);
 #endif
     return nullptr;
 }
@@ -408,8 +461,8 @@ tresult PLUGIN_API WreckageController::notify(IMessage* message) {
         if (attrs->getBinary("pathUtf8", ptr, sz) == kResultOk && ptr && sz > 0) {
             std::string u8(static_cast<const char*>(ptr), sz);
             lastSavedNm6Path_ = utf8ToWide(u8);
-            std::filesystem::path fp(lastSavedNm6Path_);
-            std::string stem = wideToUtf8(fp.stem().wstring());
+            std::filesystem::path fp = std::filesystem::u8path(u8);
+            std::string stem = fp.stem().u8string();
             if (!stem.empty()) activePresetName_ = stem;
             ++uiDirtySeq_;
         }

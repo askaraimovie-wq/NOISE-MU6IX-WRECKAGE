@@ -17,7 +17,7 @@ using namespace Steinberg::Vst;
 
 namespace NoiseMu6ix {
 
-static const wchar_t* kWndClassName = L"NoiseMu6ixWreckageD2DViewClass_v110";
+static const wchar_t* kWndClassName = L"NoiseMu6ixWreckageD2DViewClass_v111";
 
 static HINSTANCE getPluginModuleHandle() {
     HINSTANCE hInst = nullptr;
