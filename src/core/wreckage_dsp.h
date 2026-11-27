@@ -490,6 +490,8 @@ public:
         lastWarmth_ = -99.0f;
         lastCompAttMs_ = -1.0f;
         lastCompRelMs_ = -1.0f;
+        wasFilterOn_ = false;
+        wasEqOn_ = false;
         wasDelayOn_ = false;
         wasRevOn_ = false;
         resetTails();
@@ -511,6 +513,10 @@ public:
 
     inline void process(float& l, float& r, const MasterFxParams& p) {
         if (p.filterOn) {
+            if (!wasFilterOn_) {
+                flt1L_.reset(); flt1R_.reset(); flt2L_.reset(); flt2R_.reset();
+                wasFilterOn_ = true;
+            }
             float fHash = p.filterCutoffHz + p.filterRes * 100000.0f + p.filterType * 1000000.0f;
             if (std::fabs(fHash - lastFiltHash_) > 0.1f) {
                 lastFiltHash_ = fHash;
@@ -544,7 +550,15 @@ public:
             }
         }
 
+        else {
+            wasFilterOn_ = false;
+        }
+
         if (p.eqOn) {
+            if (!wasEqOn_) {
+                eqLowL_.reset(); eqLowR_.reset(); eqMidL_.reset(); eqMidR_.reset(); eqHighL_.reset(); eqHighR_.reset();
+                wasEqOn_ = true;
+            }
             float eqHash = p.eqLowFreq + p.eqLowGain * 100.0f + p.eqMidFreq + p.eqMidGain * 200.0f + p.eqHighFreq + p.eqHighGain * 300.0f;
             if (std::fabs(eqHash - lastEqHash_) > 0.05f) {
                 lastEqHash_ = eqHash;
@@ -557,6 +571,10 @@ public:
             }
             l = eqHighL_.process(eqMidL_.process(eqLowL_.process(l)));
             r = eqHighR_.process(eqMidR_.process(eqLowR_.process(r)));
+        }
+
+        else {
+            wasEqOn_ = false;
         }
 
         if (p.compOn) {
@@ -703,7 +721,7 @@ private:
     float lastFiltHash_ = -1.0f, lastEqHash_ = -1.0f, lastWarmth_ = -99.0f, lastRevHash_ = -1.0f;
     float lastCompAttMs_ = -1.0f, lastCompRelMs_ = -1.0f;
     float compAttCoeff_ = 0.99f, compRelCoeff_ = 0.999f;
-    bool wasDelayOn_ = false, wasRevOn_ = false;
+    bool wasFilterOn_ = false, wasEqOn_ = false, wasDelayOn_ = false, wasRevOn_ = false;
     float lastGrDb_ = 0.0f;
     float outEnv_ = 0.0f;
     Biquad flt1L_, flt1R_, flt2L_, flt2R_;

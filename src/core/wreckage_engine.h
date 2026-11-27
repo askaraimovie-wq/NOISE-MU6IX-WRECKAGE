@@ -13,6 +13,8 @@
 #include <cstring>
 #include <memory>
 #include <mutex>
+#include <locale>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -116,7 +118,7 @@ struct Voice {
     bool oneShot = true;
     bool unitPitch = true;
 
-    MultiMicSample sample;
+    std::array<std::shared_ptr<AudioBuffer>, 4> micBufs;
     std::shared_ptr<AudioBuffer> primaryBuf;
     const float* primL = nullptr;
     const float* primR = nullptr;
@@ -468,6 +470,24 @@ public:
         }
     }
 
+    static std::string fmtFloatC(float v) {
+        if (!std::isfinite(v)) v = 0.0f;
+        std::ostringstream oss;
+        oss.imbue(std::locale::classic());
+        oss.precision(6);
+        oss << std::fixed << v;
+        return oss.str();
+    }
+
+    static float parseFloatC(const char* s) {
+        if (!s) return 0.0f;
+        std::istringstream iss(s);
+        iss.imbue(std::locale::classic());
+        float v = 0.0f;
+        iss >> v;
+        return std::isfinite(v) ? v : 0.0f;
+    }
+
     static std::string sanitizeJsonStr(const std::string& in) {
         std::string out;
         out.reserve(in.size());
@@ -487,10 +507,10 @@ public:
         const auto& p = params_;
         const auto& fx = p.fx;
         std::string json = "{\"format\":5,\"mix\":{";
-        json += "\"bg0\":" + std::to_string(p.busGain[0]) +
-                ",\"bg1\":" + std::to_string(p.busGain[1]) +
-                ",\"bg2\":" + std::to_string(p.busGain[2]) +
-                ",\"bg3\":" + std::to_string(p.busGain[3]) +
+        json += "\"bg0\":" + fmtFloatC(p.busGain[0]) +
+                ",\"bg1\":" + fmtFloatC(p.busGain[1]) +
+                ",\"bg2\":" + fmtFloatC(p.busGain[2]) +
+                ",\"bg3\":" + fmtFloatC(p.busGain[3]) +
                 ",\"bb0\":" + std::to_string(p.busBypass[0] ? 1 : 0) +
                 ",\"bb1\":" + std::to_string(p.busBypass[1] ? 1 : 0) +
                 ",\"bb2\":" + std::to_string(p.busBypass[2] ? 1 : 0) +
@@ -498,46 +518,46 @@ public:
                 ",\"gfm\":" + std::to_string(p.globalFakeMic ? 1 : 0) +
                 ",\"fon\":" + std::to_string(fx.filterOn ? 1 : 0) +
                 ",\"ftp\":" + std::to_string(fx.filterType) +
-                ",\"fco\":" + std::to_string(fx.filterCutoffHz) +
-                ",\"frs\":" + std::to_string(fx.filterRes) +
+                ",\"fco\":" + fmtFloatC(fx.filterCutoffHz) +
+                ",\"frs\":" + fmtFloatC(fx.filterRes) +
                 ",\"eon\":" + std::to_string(fx.eqOn ? 1 : 0) +
-                ",\"elf\":" + std::to_string(fx.eqLowFreq) +
-                ",\"elg\":" + std::to_string(fx.eqLowGain) +
-                ",\"emf\":" + std::to_string(fx.eqMidFreq) +
-                ",\"emg\":" + std::to_string(fx.eqMidGain) +
-                ",\"ehf\":" + std::to_string(fx.eqHighFreq) +
-                ",\"ehg\":" + std::to_string(fx.eqHighGain) +
+                ",\"elf\":" + fmtFloatC(fx.eqLowFreq) +
+                ",\"elg\":" + fmtFloatC(fx.eqLowGain) +
+                ",\"emf\":" + fmtFloatC(fx.eqMidFreq) +
+                ",\"emg\":" + fmtFloatC(fx.eqMidGain) +
+                ",\"ehf\":" + fmtFloatC(fx.eqHighFreq) +
+                ",\"ehg\":" + fmtFloatC(fx.eqHighGain) +
                 ",\"con\":" + std::to_string(fx.compOn ? 1 : 0) +
-                ",\"cth\":" + std::to_string(fx.compThreshDb) +
-                ",\"crt\":" + std::to_string(fx.compRatio) +
-                ",\"cat\":" + std::to_string(fx.compAttackMs) +
-                ",\"crl\":" + std::to_string(fx.compReleaseMs) +
-                ",\"ckn\":" + std::to_string(fx.compKneeDb) +
-                ",\"cmk\":" + std::to_string(fx.compMakeupDb) +
+                ",\"cth\":" + fmtFloatC(fx.compThreshDb) +
+                ",\"crt\":" + fmtFloatC(fx.compRatio) +
+                ",\"cat\":" + fmtFloatC(fx.compAttackMs) +
+                ",\"crl\":" + fmtFloatC(fx.compReleaseMs) +
+                ",\"ckn\":" + fmtFloatC(fx.compKneeDb) +
+                ",\"cmk\":" + fmtFloatC(fx.compMakeupDb) +
                 ",\"son\":" + std::to_string(fx.satOn ? 1 : 0) +
                 ",\"smd\":" + std::to_string(fx.satMode) +
-                ",\"sdr\":" + std::to_string(fx.satDrive) +
-                ",\"swm\":" + std::to_string(fx.satWarmth) +
-                ",\"smx\":" + std::to_string(fx.satMix) +
+                ",\"sdr\":" + fmtFloatC(fx.satDrive) +
+                ",\"swm\":" + fmtFloatC(fx.satWarmth) +
+                ",\"smx\":" + fmtFloatC(fx.satMix) +
                 ",\"don\":" + std::to_string(fx.delayOn ? 1 : 0) +
                 ",\"dmd\":" + std::to_string(fx.delayMode) +
-                ",\"dtm\":" + std::to_string(fx.delayTimeMs) +
-                ",\"dfb\":" + std::to_string(fx.delayFeedback) +
-                ",\"dtn\":" + std::to_string(fx.delayTone) +
-                ",\"dwd\":" + std::to_string(fx.delayWidth) +
-                ",\"dmx\":" + std::to_string(fx.delayMix) +
+                ",\"dtm\":" + fmtFloatC(fx.delayTimeMs) +
+                ",\"dfb\":" + fmtFloatC(fx.delayFeedback) +
+                ",\"dtn\":" + fmtFloatC(fx.delayTone) +
+                ",\"dwd\":" + fmtFloatC(fx.delayWidth) +
+                ",\"dmx\":" + fmtFloatC(fx.delayMix) +
                 ",\"ron\":" + std::to_string(fx.revOn ? 1 : 0) +
                 ",\"rmd\":" + std::to_string(fx.revMode) +
-                ",\"rpd\":" + std::to_string(fx.revPreDelayMs) +
-                ",\"rdc\":" + std::to_string(fx.revDecaySec) +
-                ",\"rsz\":" + std::to_string(fx.revSize) +
-                ",\"rlc\":" + std::to_string(fx.revLowCutHz) +
-                ",\"rhc\":" + std::to_string(fx.revHighCutHz) +
-                ",\"rmx\":" + std::to_string(fx.revMix) +
+                ",\"rpd\":" + fmtFloatC(fx.revPreDelayMs) +
+                ",\"rdc\":" + fmtFloatC(fx.revDecaySec) +
+                ",\"rsz\":" + fmtFloatC(fx.revSize) +
+                ",\"rlc\":" + fmtFloatC(fx.revLowCutHz) +
+                ",\"rhc\":" + fmtFloatC(fx.revHighCutHz) +
+                ",\"rmx\":" + fmtFloatC(fx.revMix) +
                 ",\"lim\":" + std::to_string(fx.limiterOn ? 1 : 0) +
                 ",\"mbs\":" + std::to_string(fx.monoBass ? 1 : 0) +
                 ",\"pon\":" + std::to_string(fx.punishOn ? 1 : 0) +
-                ",\"pam\":" + std::to_string(fx.punishAmount) +
+                ",\"pam\":" + fmtFloatC(fx.punishAmount) +
                 ",\"pmd\":" + std::to_string(static_cast<int>(fx.punishMode));
         json += "},\"slots\":[";
         for (int i = 0; i < kTotalSlots; ++i) {
@@ -547,12 +567,12 @@ public:
                     ",\"n\":\"" + sanitizeJsonStr(s.name) + "\"" +
                     ",\"m\":" + std::to_string(s.midiNote) +
                     ",\"c\":" + std::to_string(s.hasCustomColor ? s.keyColor : 0u) +
-                    ",\"x\":" + std::to_string(s.stageX) +
-                    ",\"y\":" + std::to_string(s.stageY) +
-                    ",\"g\":" + std::to_string(s.gain) +
-                    ",\"p\":" + std::to_string(s.pitchSemitones) +
-                    ",\"a\":" + std::to_string(s.attackMs) +
-                    ",\"r\":" + std::to_string(s.releaseMs) +
+                    ",\"x\":" + fmtFloatC(s.stageX) +
+                    ",\"y\":" + fmtFloatC(s.stageY) +
+                    ",\"g\":" + fmtFloatC(s.gain) +
+                    ",\"p\":" + fmtFloatC(s.pitchSemitones) +
+                    ",\"a\":" + fmtFloatC(s.attackMs) +
+                    ",\"r\":" + fmtFloatC(s.releaseMs) +
                     ",\"fr\":" + std::to_string(s.fakeRR ? 1 : 0) +
                     ",\"fv\":" + std::to_string(s.fakeVel ? 1 : 0) +
                     ",\"os\":" + std::to_string(s.oneShot ? 1 : 0) +
@@ -571,8 +591,8 @@ public:
                         if (!firstSamp) json += ",";
                         firstSamp = false;
                         json += "[" + std::to_string(vl) + "," + std::to_string(r) + "," + std::to_string(mic) + "," +
-                                std::to_string(sid) + "," + std::to_string(it.startNorm) + "," + std::to_string(it.endNorm) + "," +
-                                std::to_string(it.fadeInNorm) + "," + std::to_string(it.fadeOutNorm) + "]";
+                                std::to_string(sid) + "," + fmtFloatC(it.startNorm) + "," + fmtFloatC(it.endNorm) + "," +
+                                fmtFloatC(it.fadeInNorm) + "," + fmtFloatC(it.fadeOutNorm) + "]";
                     }
                 }
             }
@@ -583,7 +603,7 @@ public:
         return pack.saveAtomic(targetPath);
     }
 
-    bool loadKitFromNm6(const std::filesystem::path& packPath, bool* outHasMixParams = nullptr) {
+    bool loadKitFromNm6(const std::filesystem::path& packPath, bool* outHasMixParams = nullptr, bool loadMixParams = true) {
         Nm6Pack pack;
         if (!pack.loadFromFile(packPath)) return false;
 
@@ -602,7 +622,7 @@ public:
         const std::string& js = pack.kitMetadataJson;
         bool hasMix = false;
         auto mixPos = js.find("\"mix\":{");
-        if (mixPos != std::string::npos) {
+        if (loadMixParams && mixPos != std::string::npos) {
             auto mixEnd = js.find("},\"slots\"", mixPos);
             if (mixEnd != std::string::npos) {
                 hasMix = true;
@@ -617,7 +637,7 @@ public:
                 };
                 auto readMFlt = [&](const char* k, float& dst) {
                     auto kp = mChunk.find(k);
-                    if (kp != std::string::npos) dst = std::strtof(mChunk.c_str() + kp + std::strlen(k), nullptr);
+                    if (kp != std::string::npos) dst = parseFloatC(mChunk.c_str() + kp + std::strlen(k));
                 };
                 auto& p = params_;
                 auto& fx = p.fx;
@@ -673,7 +693,7 @@ public:
                 };
                 auto readFltKey = [&](const char* k, float& dst) {
                     auto kp = chunk.find(k);
-                    if (kp != std::string::npos) dst = std::strtof(chunk.c_str() + kp + std::strlen(k), nullptr);
+                    if (kp != std::string::npos) dst = parseFloatC(chunk.c_str() + kp + std::strlen(k));
                 };
                 readIntKey("\"m\":", s.midiNote);
                 auto cPos = chunk.find("\"c\":");
@@ -698,10 +718,16 @@ public:
                 if (sArr != std::string::npos) {
                     size_t p = sArr + 5;
                     while ((p = chunk.find('[', p)) != std::string::npos) {
+                        size_t closeBr = chunk.find(']', p);
+                        if (closeBr == std::string::npos) break;
+                        std::string tupleStr = chunk.substr(p + 1, closeBr - (p + 1));
+                        std::replace(tupleStr.begin(), tupleStr.end(), ',', ' ');
+                        std::istringstream tiss(tupleStr);
+                        tiss.imbue(std::locale::classic());
                         int vl = 0, r = 0, mic = 0, sid = 0;
                         float st = 0.0f, en = 1.0f, fi = 0.0f, fo = 0.0f;
-                        if (std::sscanf(chunk.c_str() + p, "[%d,%d,%d,%d,%f,%f,%f,%f]",
-                                        &vl, &r, &mic, &sid, &st, &en, &fi, &fo) >= 4) {
+                        if (tiss >> vl >> r >> mic >> sid) {
+                            tiss >> st >> en >> fi >> fo;
                             if (vl >= 0 && vl < kMaxVelLayers && r >= 0 && r < kMaxRoundRobins &&
                                 mic >= 0 && mic < 4 && sid >= 0 && static_cast<size_t>(sid) < decoded.size() && decoded[sid]) {
                                 auto& rrs = s.velLayers[vl].rrs;
@@ -892,7 +918,7 @@ public:
 
                 if (needRealRoom) {
                     float rl = 0.0f, rr = 0.0f;
-                    if (readHermite(*v.sample.mics[1], v.playPos, v.reverse, rl, rr)) {
+                    if (readHermite(*v.micBufs[1], v.playPos, v.reverse, rl, rr)) {
                         rrL[n] += rl * totalGain * v.panL * roomDepthSend;
                         rrR[n] += rr * totalGain * v.panR * roomDepthSend;
                     }
@@ -903,7 +929,7 @@ public:
 
                 if (needRealHall) {
                     float hl = 0.0f, hr = 0.0f;
-                    if (readHermite(*v.sample.mics[2], v.playPos, v.reverse, hl, hr)) {
+                    if (readHermite(*v.micBufs[2], v.playPos, v.reverse, hl, hr)) {
                         hrL[n] += hl * totalGain * v.panL * hallDepthSend;
                         hrR[n] += hr * totalGain * v.panR * hallDepthSend;
                     }
@@ -914,7 +940,7 @@ public:
 
                 if (needRealSub) {
                     float ll = 0.0f, lr = 0.0f;
-                    if (readHermite(*v.sample.mics[3], v.playPos, v.reverse, ll, lr)) {
+                    if (readHermite(*v.micBufs[3], v.playPos, v.reverse, ll, lr)) {
                         float m = 0.5f * (ll + lr) * totalGain;
                         sbL[n] += m; sbR[n] += m;
                     }
@@ -1105,7 +1131,7 @@ private:
         v.chokeGroup = s.chokeGroup;
         v.reverse = s.reverse;
         v.oneShot = s.oneShot;
-        v.sample = mm;
+        v.micBufs = mm.mics;
         v.primaryBuf = prim;
         v.primL = prim->left.data();
         v.primR = prim->right.data();
@@ -1125,8 +1151,8 @@ private:
         idleSleeping_.store(false, std::memory_order_relaxed);
 
         double totalF = static_cast<double>(v.primLen);
-        v.startFrame = std::clamp(static_cast<double>(mm.startNorm), 0.0, 0.98) * totalF;
-        v.endFrame   = std::max(v.startFrame + 8.0, std::clamp(static_cast<double>(mm.endNorm), 0.02, 1.0) * totalF);
+        v.startFrame = std::min(std::max(0.0, totalF - 4.0), std::clamp(static_cast<double>(mm.startNorm), 0.0, 0.98) * totalF);
+        v.endFrame   = std::min(totalF, std::max(v.startFrame + 4.0, std::clamp(static_cast<double>(mm.endNorm), 0.02, 1.0) * totalF));
         double regLen = std::max(8.0, v.endFrame - v.startFrame);
         v.fadeInFrames  = std::clamp(static_cast<double>(mm.fadeInNorm), 0.0, 0.5) * regLen;
         v.fadeOutFrames = std::clamp(static_cast<double>(mm.fadeOutNorm), 0.0, 0.5) * regLen;
