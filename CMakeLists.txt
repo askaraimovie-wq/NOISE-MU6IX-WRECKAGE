@@ -50,7 +50,9 @@ if(NOT DEFINED SMTG_ADD_VST3_UTILITIES)
     set(SMTG_ADD_VST3_UTILITIES ON CACHE BOOL "" FORCE)
 endif()
 set(SMTG_RUN_VST_VALIDATOR OFF CACHE BOOL "" FORCE)
-add_subdirectory(third_party/vst3sdk EXCLUDE_FROM_ALL)
+set(vst3sdk_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/vst3sdk")
+add_subdirectory(${vst3sdk_SOURCE_DIR} ${PROJECT_BINARY_DIR}/vst3sdk EXCLUDE_FROM_ALL)
+smtg_enable_vst3_sdk()
 
 set(WRECKAGE_SOURCES
     src/vst3/wreckage_factory.cpp
